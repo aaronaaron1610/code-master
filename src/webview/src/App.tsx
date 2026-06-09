@@ -1045,17 +1045,43 @@ export default function App() {
         </div>
 
         {/* Pricing / Token stats bar */}
-        {usage && (
-          <div className="flex items-center justify-between px-2 py-0.5 bg-vscode-inputBg/15 border border-vscode-inputBorder/15 rounded text-[8.5px] text-vscode-fg/40 font-mono select-none animate-fade-in">
-            <div className="flex space-x-2">
-              <span>Prompt: {usage.input} tokens</span>
-              <span>Completion: {usage.output} tokens</span>
+        {usage && (() => {
+          const activeModel = modelsList.find((m) => m.id === model);
+          const contextLimit = activeModel?.context_length || 0;
+          const usedTokens = (usage.input || 0) + (usage.output || 0) + (usage.cacheRead || 0);
+          const contextPct = contextLimit > 0 ? Math.min(100, (usedTokens / contextLimit) * 100) : 0;
+          const ctxColor =
+            contextPct >= 90 ? 'text-red-400' :
+            contextPct >= 70 ? 'text-amber-400' :
+            'text-emerald-400';
+          return (
+            <div className="flex items-center justify-between px-2 py-1 bg-vscode-inputBg/15 border border-vscode-inputBorder/15 rounded text-[8.5px] text-vscode-fg/40 font-mono select-none animate-fade-in">
+              <div className="flex items-center space-x-2">
+                <span>Prompt: {usage.input} tokens</span>
+                {contextLimit > 0 && (
+                  <span className={`flex items-center space-x-1 ${ctxColor} font-semibold`} title={`Context window usage`}>
+                    <span>Context:</span>
+                    <span>{contextPct.toFixed(1)}%</span>
+                    <div className="relative w-12 h-1 bg-vscode-bg/60 rounded-full overflow-hidden border border-vscode-inputBorder/30">
+                      <div
+                        className={`h-full transition-all duration-300 ${
+                          contextPct >= 90 ? 'bg-red-500' :
+                          contextPct >= 70 ? 'bg-amber-500' :
+                          'bg-emerald-500'
+                        }`}
+                        style={{ width: `${contextPct}%` }}
+                      />
+                    </div>
+                  </span>
+                )}
+                <span>Completion: {usage.output} tokens</span>
+              </div>
+              {usage.cacheRead > 0 && (
+                <span className="text-emerald-400 font-semibold">Cached: {usage.cacheRead}</span>
+              )}
             </div>
-            {usage.cacheRead > 0 && (
-              <span className="text-emerald-400 font-semibold">Cached: {usage.cacheRead}</span>
-            )}
-          </div>
-        )}
+          );
+        })()}
       </footer>
     </div>
   );
