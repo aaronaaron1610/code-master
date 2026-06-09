@@ -82,6 +82,8 @@ export class Agent {
 
     const systemPrompt = this.getSystemPrompt();
     let loopActive = true;
+    let lastToolSignature = '';
+    let consecutiveToolCallCount = 0;
 
     while (loopActive) {
       if (this.abortController.signal.aborted) {
@@ -224,6 +226,28 @@ export class Agent {
         const tool = tools[0];
         this.pendingToolCall = tool;
 
+        // Generic consecutive loop detection
+        const toolSignature = `${tool.name}:${JSON.stringify(tool.arguments)}`;
+        if (toolSignature === lastToolSignature) {
+          consecutiveToolCallCount++;
+          if (consecutiveToolCallCount >= 3) {
+            loopActive = false;
+            this.messages.push({
+              role: 'assistant',
+              content: `⚠️ Stopped execution: Detected an infinite loop pattern. The agent repeatedly called the same tool (${tool.name}) with identical arguments.`
+            });
+            onStateUpdate({
+              messages: this.renderMessagesForUI(),
+              isLlmActive: false,
+              usage: this.cumulativeUsage
+            });
+            break;
+          }
+        } else {
+          lastToolSignature = toolSignature;
+          consecutiveToolCallCount = 1;
+        }
+
         onStateUpdate({
           messages: this.renderMessagesForUI(),
           isLlmActive: false,
@@ -231,7 +255,11 @@ export class Agent {
         });
 
         // Execute tool
-        const toolResult = await this.executeTool(tool, onStateUpdate);
+        let toolResult = await this.executeTool(tool, onStateUpdate);
+        
+        if (consecutiveToolCallCount === 2) {
+          toolResult += `\n\n[SYSTEM NOTE: You have executed the tool "${tool.name}" consecutively with the exact same arguments. If you are repeating because of a perceived error, verify if the exit status or outputs show success. If the task is finished, summarize the results and stop calling tools.]`;
+        }
         
         // Push tool response as a system message to context
         this.messages.push({
@@ -576,7 +604,7 @@ export class Agent {
       'ls', 'dir', 'find', 'grep', 'cat',
       'git status', 'git log', 'git diff', 'git show', 'git branch',
       'npm run test', 'npm test', 'pytest', 'cargo test',
-      'npm run build', 'npm build', 'make', 'tsc'
+      'npm run build', 'npm build', 'npm run compile', 'npm compile', 'make', 'tsc'
     ];
     
     for (const prefix of safePrefixes) {
@@ -596,6 +624,9 @@ export class Agent {
         if (stderr) result += `STDERR:\n${stderr}`;
         const exitCode = error ? error.code : 0;
         result += `\nEXIT CODE: ${exitCode} ${exitCode === 0 ? '✓' : '✗'}`;
+        if (exitCode === 0) {
+          result += `\nNote: The command completed successfully (Exit Code 0). Any text under STDERR above is diagnostic output or warnings, not a failure.`;
+        }
         resolve(result);
       });
     });
