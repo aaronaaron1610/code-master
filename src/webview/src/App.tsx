@@ -4,6 +4,7 @@ import {
   Terminal, FileText, Search, FileCode, CheckCircle, AlertTriangle,
   Paperclip, Bot, MessageSquare
 } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
 import logo from './assets/logo.png';
 
 // Safely acquire VS Code API inside the webview environment
@@ -604,63 +605,72 @@ export default function App() {
   const renderMarkdownContent = (content: string) => {
     if (!content) return null;
 
-    const parts = content.split(/(```[\s\S]*?```)/g);
-
-    return parts.map((part, idx) => {
-      if (part.startsWith('```')) {
-        const lines = part.split('\n');
-        const firstLine = lines[0].replace('```', '').trim();
-        const code = lines.slice(1, -1).join('\n');
-        return <CodeBlock key={idx} language={firstLine} code={code} />;
-      }
-
-      const lines = part.split('\n');
-      return (
-        <div key={idx} className="space-y-1.5 break-words">
-          {lines.map((line, lIdx) => {
-            if (!line.trim()) return <div key={lIdx} className="h-2" />;
-
-            // Check for list items
-            const isBullet = line.trim().startsWith('- ') || line.trim().startsWith('* ');
-            const isNumbered = /^\d+\.\s/.test(line.trim());
-
-            let displayLine = line;
-            if (isBullet) {
-              displayLine = line.trim().replace(/^[-*]\s+/, '');
-            } else if (isNumbered) {
-              displayLine = line.trim().replace(/^\d+\.\s+/, '');
-            }
-
-            const contentParts = parseInline(displayLine);
-
-            if (isBullet) {
+    return (
+      <div className="space-y-2 break-words text-[12px] leading-relaxed text-vscode-fg/90">
+        <ReactMarkdown
+          components={{
+            pre({ children }) {
+              return <>{children}</>;
+            },
+            code({ className, children, ...props }) {
+              const match = /language-(\w+)/.exec(className || '');
+              const isBlock = match || String(children).includes('\n');
+              if (isBlock) {
+                return (
+                  <CodeBlock
+                    language={match ? match[1] : ''}
+                    code={String(children).replace(/\n$/, '')}
+                  />
+                );
+              }
               return (
-                <div key={lIdx} className="flex items-start space-x-2 pl-4 text-[12px] leading-relaxed">
-                  <span className="text-vscode-activeBorder select-none mt-1.5 shrink-0 w-1.5 h-1.5 rounded-full bg-vscode-activeBorder" />
-                  <span className="flex-1 text-vscode-fg/90">{contentParts}</span>
-                </div>
+                <code className="bg-vscode-inputBg/80 px-1.5 py-0.5 rounded text-rose-300 font-mono text-[12px] border border-vscode-inputBorder/50" {...props}>
+                  {children}
+                </code>
               );
-            }
-            if (isNumbered) {
-              const numMatch = line.trim().match(/^(\d+)\.\s+/);
-              const num = numMatch ? numMatch[1] : '1';
+            },
+            p({ children }) {
+              return <p className="mb-2 last:mb-0">{children}</p>;
+            },
+            a({ href, children }) {
               return (
-                <div key={lIdx} className="flex items-start space-x-2 pl-4 text-[12px] leading-relaxed">
-                  <span className="text-vscode-activeBorder font-mono font-bold select-none text-[11px] mt-0.5 shrink-0">{num}.</span>
-                  <span className="flex-1 text-vscode-fg/90">{contentParts}</span>
-                </div>
+                <a
+                  href={href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-vscode-activeBorder hover:underline font-semibold"
+                >
+                  {children}
+                </a>
               );
+            },
+            ul({ children }) {
+              return <ul className="list-disc pl-4 space-y-1 my-1.5">{children}</ul>;
+            },
+            ol({ children }) {
+              return <ol className="list-decimal pl-4 space-y-1 my-1.5">{children}</ol>;
+            },
+            li({ children }) {
+              return <li className="leading-relaxed">{children}</li>;
+            },
+            h1({ children }) {
+              return <h1 className="text-[13px] font-extrabold text-white mt-3 mb-1 first:mt-0">{children}</h1>;
+            },
+            h2({ children }) {
+              return <h2 className="text-xs font-bold text-white mt-3 mb-1 first:mt-0">{children}</h2>;
+            },
+            h3({ children }) {
+              return <h3 className="text-[11px] font-semibold text-white mt-2 mb-1 first:mt-0">{children}</h3>;
+            },
+            blockquote({ children }) {
+              return <blockquote className="border-l-2 border-vscode-activeBorder/60 bg-vscode-inputBg/10 pl-3 py-1 my-2 italic text-vscode-fg/80">{children}</blockquote>;
             }
-
-            return (
-              <p key={lIdx} className="text-[12px] leading-relaxed text-vscode-fg/90">
-                {contentParts}
-              </p>
-            );
-          })}
-        </div>
-      );
-    });
+          }}
+        >
+          {content}
+        </ReactMarkdown>
+      </div>
+    );
   };
 
   const filteredModels = modelsList.filter((m) =>
