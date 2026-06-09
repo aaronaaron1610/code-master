@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as cp from 'child_process';
-import { streamChat, ChatMessage, ChatMessageContentPart, Attachment, getMessageTextContent } from './llm';
+import { streamChat, ChatMessage, ChatMessageContentPart, Attachment, getMessageTextContent, constructPromptWithFiles } from './llm';
 
 export interface ToolCall {
   id: string;
@@ -18,6 +18,7 @@ export class Agent {
   private workspaceRoot: string = '';
   private activeResolver: ((decision: { approve: boolean }) => void) | null = null;
   private pendingToolCall: ToolCall | null = null;
+  private toolSeq = 0;
   private abortController: AbortController | null = null;
   private cumulativeUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 
@@ -77,7 +78,13 @@ export class Agent {
     this.cumulativeUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 
     if (userContent) {
-      this.messages.push({ role: 'user', content: userContent, attachments });
+      // Inject attachments into the textual prompt so the LLM sees file contents.
+      const rawText = typeof userContent === 'string' ? userContent : getMessageTextContent(userContent);
+      const attachedText = attachments && attachments.length > 0
+        ? constructPromptWithFiles(rawText, attachments.map(a => ({ name: a.name, content: a.content })))
+        : rawText;
+
+      this.messages.push({ role: 'user', content: attachedText, attachments });
     }
 
     const systemPrompt = this.getSystemPrompt();
@@ -197,12 +204,12 @@ export class Agent {
         this.cumulativeUsage.cacheRead += lastUsageForIteration.cacheRead;
         this.cumulativeUsage.cacheWrite += lastUsageForIteration.cacheWrite;
 
-        // Parse final tools
+        // Parse final tools and attach them directly to the assistant message in history
         const finalTools = this.parseActiveTools(responseText);
 
         // Push completed message to history with tools populated
-        this.messages.push({ 
-          role: 'assistant', 
+        this.messages.push({
+          role: 'assistant',
           content: responseText,
           thought: thoughtText || undefined,
           tools: finalTools.length > 0 ? finalTools : undefined
@@ -222,12 +229,14 @@ export class Agent {
           break;
         }
 
-        // Execute parsed tool
-        const tool = tools[0];
-        this.pendingToolCall = tool;
+        // Execute all parsed tools in order
+        for (let toolIndex = 0; toolIndex < tools.length; toolIndex++) {
+          const tool = lastMsg.tools![toolIndex];
+          // Ensure we're operating on the same object reference stored in messages
+          this.pendingToolCall = tool;
 
-        // Generic consecutive loop detection
-        const toolSignature = `${tool.name}:${JSON.stringify(tool.arguments)}`;
+          // Generic consecutive loop detection
+          const toolSignature = `${tool.name}:${JSON.stringify(tool.arguments)}`;
         if (toolSignature === lastToolSignature) {
           consecutiveToolCallCount++;
           if (consecutiveToolCallCount >= 3) {
@@ -248,26 +257,27 @@ export class Agent {
           consecutiveToolCallCount = 1;
         }
 
-        onStateUpdate({
-          messages: this.renderMessagesForUI(),
-          isLlmActive: false,
-          usage: this.cumulativeUsage
-        });
+          onStateUpdate({
+            messages: this.renderMessagesForUI(),
+            isLlmActive: false,
+            usage: this.cumulativeUsage
+          });
 
-        // Execute tool
-        let toolResult = await this.executeTool(tool, onStateUpdate);
-        
-        if (consecutiveToolCallCount === 2) {
-          toolResult += `\n\n[SYSTEM NOTE: You have executed the tool "${tool.name}" consecutively with the exact same arguments. If you are repeating because of a perceived error, verify if the exit status or outputs show success. If the task is finished, summarize the results and stop calling tools.]`;
+          // Execute tool (operate on reference stored in messages)
+          let toolResult = await this.executeTool(tool, onStateUpdate);
+
+          if (consecutiveToolCallCount === 2) {
+            toolResult += `\n\n[SYSTEM NOTE: You have executed the tool "${tool.name}" consecutively with the exact same arguments. If you are repeating because of a perceived error, verify if the exit status or outputs show success. If the task is finished, summarize the results and stop calling tools.]`;
+          }
+
+          // Push tool response as a system message to context
+          this.messages.push({
+            role: 'system',
+            content: `[Tool Result for ${tool.name}]:\n${toolResult}`
+          });
+
+          this.pendingToolCall = null;
         }
-        
-        // Push tool response as a system message to context
-        this.messages.push({
-          role: 'system',
-          content: `[Tool Result for ${tool.name}]:\n${toolResult}`
-        });
-
-        this.pendingToolCall = null;
 
       } catch (err: any) {
         loopActive = false;
@@ -496,7 +506,7 @@ export class Agent {
           usage: this.cumulativeUsage
         });
 
-        const result = await this.toolRunCommand(command);
+        const result = await this.toolRunCommand(command, this.abortController?.signal);
         tool.status = 'completed';
         tool.result = result;
         return tool.result;
@@ -583,21 +593,6 @@ export class Agent {
 
   private isCommandSafe(command: string): boolean {
     const cmd = command.trim().toLowerCase();
-    
-    // Check for destructive/unsafe patterns
-    const unsafeKeywords = [
-      'rm', 'del', 'rmdir', 'rd', 
-      'reset', 'clean', 'drop', 'delete', 
-      'sudo', 'administrator', 'admin'
-    ];
-    
-    for (const word of unsafeKeywords) {
-      const regex = new RegExp(`\\b${word}\\b`);
-      if (regex.test(cmd)) {
-        return false;
-      }
-    }
-    
     // List of safe command prefixes
     const safePrefixes = [
       'npm install', 'pip install', 'cargo add',
@@ -606,29 +601,47 @@ export class Agent {
       'npm run test', 'npm test', 'pytest', 'cargo test',
       'npm run build', 'npm build', 'npm run compile', 'npm compile', 'make', 'tsc'
     ];
-    
     for (const prefix of safePrefixes) {
-      if (cmd.startsWith(prefix)) {
-        return true;
-      }
+      if (cmd.startsWith(prefix)) return true;
     }
-    
+
+    // Prefix-only unsafe checks: commands that start with destructive verbs
+    const unsafePrefixes = [
+      'rm ', 'del ', 'rmdir ', 'rd ', 'git reset', 'git clean', 'reset ', 'sudo ', 'drop ', 'delete '
+    ];
+    for (const up of unsafePrefixes) {
+      if (cmd.startsWith(up)) return false;
+    }
+
+    // If not explicitly listed as safe, consider it unsafe by default.
     return false;
   }
 
-  private async toolRunCommand(command: string): Promise<string> {
+  private async toolRunCommand(command: string, signal?: AbortSignal): Promise<string> {
     return new Promise((resolve) => {
-      cp.exec(command, { cwd: this.workspaceRoot }, (error, stdout, stderr) => {
+      const child = cp.exec(command, { cwd: this.workspaceRoot }, (error, stdout, stderr) => {
         let result = '';
         if (stdout) result += stdout;
         if (stderr) result += `STDERR:\n${stderr}`;
-        const exitCode = error ? error.code : 0;
+        const exitCode = error ? (error as any).code : 0;
         result += `\nEXIT CODE: ${exitCode} ${exitCode === 0 ? '✓' : '✗'}`;
         if (exitCode === 0) {
           result += `\nNote: The command completed successfully (Exit Code 0). Any text under STDERR above is diagnostic output or warnings, not a failure.`;
         }
         resolve(result);
       });
+
+      if (signal) {
+        const onAbort = () => {
+          try { child.kill(); } catch {}
+          resolve('Execution aborted by user.');
+        };
+        if (signal.aborted) {
+          onAbort();
+        } else {
+          signal.addEventListener('abort', onAbort, { once: true });
+        }
+      }
     });
   }
 
@@ -693,7 +706,7 @@ export class Agent {
         
         // If this is the last message and we have a pending/running tool in memory, preserve its status
         if (isLast && this.pendingToolCall) {
-          const matchedToolIndex = tools.findIndex(t => t.id === this.pendingToolCall!.id || t.name === this.pendingToolCall!.name);
+          const matchedToolIndex = tools.findIndex(t => t.id === this.pendingToolCall!.id);
           if (matchedToolIndex !== -1) {
             tools[matchedToolIndex] = this.pendingToolCall;
           }
@@ -741,7 +754,7 @@ export class Agent {
     const listRegex = /<list_files(?:\s+glob=["']([^"']+)["'])?\s*\/>/g;
     while ((match = listRegex.exec(content)) !== null) {
       tools.push({
-        id: 'tool_list',
+        id: this.generateToolId('list_files', 'list'),
         name: 'list_files',
         arguments: { glob: match[1] || undefined },
         status: 'pending'
@@ -752,7 +765,7 @@ export class Agent {
     const readRegex = /<read_file\s+path=["']([^"']+)["']\s*\/>/g;
     while ((match = readRegex.exec(content)) !== null) {
       tools.push({
-        id: `tool_read_${match[1].replace(/[^a-zA-Z0-9]/g, '_')}`,
+        id: this.generateToolId('read_file', match[1]),
         name: 'read_file',
         arguments: { path: match[1] },
         status: 'pending'
@@ -763,7 +776,7 @@ export class Agent {
     const searchRegex = /<search_code\s+query=["']([^"']+)["']\s*\/>/g;
     while ((match = searchRegex.exec(content)) !== null) {
       tools.push({
-        id: `tool_search_${Math.random().toString(36).substring(2, 7)}`,
+        id: this.generateToolId('search_code', 'search'),
         name: 'search_code',
         arguments: { query: match[1] },
         status: 'pending'
@@ -778,7 +791,7 @@ export class Agent {
       const fileContent = match[2];
 
       tools.push({
-        id: `tool_write_${filePath.replace(/[^a-zA-Z0-9]/g, '_')}`,
+        id: this.generateToolId('write_file', filePath),
         name: 'write_file',
         arguments: { 
           path: filePath, 
@@ -808,7 +821,7 @@ export class Agent {
       }
 
       tools.push({
-        id: `tool_edit_${filePath.replace(/[^a-zA-Z0-9]/g, '_')}`,
+        id: this.generateToolId('edit_file', filePath),
         name: 'edit_file',
         arguments: { 
           path: filePath, 
@@ -824,7 +837,7 @@ export class Agent {
     const runRegex = /<run_command\s+cmd=["']([^"']+)["']\s*\/>/g;
     while ((match = runRegex.exec(content)) !== null) {
       tools.push({
-        id: `tool_run_${Math.random().toString(36).substring(2, 7)}`,
+        id: this.generateToolId('run_command', 'run'),
         name: 'run_command',
         arguments: { cmd: match[1] },
         status: 'pending'
@@ -832,6 +845,12 @@ export class Agent {
     }
 
     return tools;
+  }
+
+  private generateToolId(kind: string, hint?: string) {
+    this.toolSeq = (this.toolSeq || 0) + 1;
+    const safeHint = (hint || '').toString().replace(/[^a-zA-Z0-9]/g, '_').substring(0, 20);
+    return `tool_${kind}_${safeHint}_${Date.now()}_${this.toolSeq}_${Math.random().toString(36).substring(2,6)}`;
   }
 
   private getSystemPrompt(): string {

@@ -143,6 +143,17 @@ function makeHttpsStreamRequest(
     onError(err);
   });
 
+  // Fallback abort handling for Node versions that don't wire AbortSignal into https.request
+  if (signal && typeof signal.addEventListener === 'function') {
+    signal.addEventListener('abort', () => {
+      try {
+        req.destroy(new Error('Request aborted'));
+      } catch {
+        try { req.abort(); } catch {}
+      }
+    }, { once: true });
+  }
+
   req.write(body);
   req.end();
 }
@@ -195,7 +206,8 @@ async function streamOpenRouter(
     apiMessages.push({ role: 'system', content: systemPrompt });
   }
   for (const msg of messages) {
-    apiMessages.push({ role: msg.role, content: msg.content });
+    const contentStr = typeof msg.content === 'string' ? msg.content : getMessageTextContent(msg.content);
+    apiMessages.push({ role: msg.role, content: contentStr });
   }
 
   const bodyData: any = {
