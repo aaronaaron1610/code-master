@@ -96,6 +96,17 @@ class CodeMasterChatViewProvider implements vscode.WebviewViewProvider {
         case 'updateThinkingEffort':
           this.currentThinkingEffort = data.thinkingEffort;
           break;
+        case 'updateMode':
+          this.currentMode = data.mode;
+          this.postMessageToWebview({
+            type: 'state',
+            messages: this.currentMode === 'agent' ? this.getUiMessagesFromAgent() : this.getUiMessagesFromChat(),
+            provider: this.currentProvider,
+            model: this.currentModel,
+            mode: this.currentMode,
+            thinkingEffort: this.currentThinkingEffort
+          });
+          break;
         case 'sendMessage':
           this.currentMode = data.options.mode;
           if (data.options.thinkingEffort) {

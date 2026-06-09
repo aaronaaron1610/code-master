@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   Send, Sparkles, RefreshCw, ChevronDown, Check, X,
   Terminal, FileText, Search, FileCode, CheckCircle, AlertTriangle,
-  Paperclip
+  Paperclip, Bot, MessageSquare
 } from 'lucide-react';
 import logo from './assets/logo.png';
 
@@ -365,6 +365,9 @@ export default function App() {
   const [isThinkingDropdownOpen, setIsThinkingDropdownOpen] = useState(false);
   const [hoveredModel, setHoveredModel] = useState<any | null>(null);
 
+  const [isModeDropdownOpen, setIsModeDropdownOpen] = useState(false);
+  const modeDropdownRef = useRef<HTMLDivElement>(null);
+
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [inputHeight, setInputHeight] = useState(34);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -443,6 +446,7 @@ export default function App() {
     function handleClickOutside(event: MouseEvent) {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) setIsDropdownOpen(false);
       if (thinkingDropdownRef.current && !thinkingDropdownRef.current.contains(event.target as Node)) setIsThinkingDropdownOpen(false);
+      if (modeDropdownRef.current && !modeDropdownRef.current.contains(event.target as Node)) setIsModeDropdownOpen(false);
     }
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
@@ -536,6 +540,11 @@ export default function App() {
   const updateModel = (selectedModel: string) => {
     setModel(selectedModel);
     vscode.postMessage({ type: 'updateModel', model: selectedModel, provider: 'OpenRouter' });
+  };
+
+  const updateMode = (selectedMode: 'chat' | 'agent') => {
+    setMode(selectedMode);
+    vscode.postMessage({ type: 'updateMode', mode: selectedMode });
   };
 
   const handleToolDecision = (toolId: string, approve: boolean) => {
@@ -727,30 +736,59 @@ export default function App() {
       <footer className="border-t border-vscode-inputBorder/45 bg-vscode-bg/95 backdrop-blur-md p-2.5 shrink-0 z-10 space-y-2 shadow-lg">
         {/* Row 1: Selectors & Controls (Mode Toggle, Model, Reasoning, Reset) */}
         <div className="flex items-center justify-between pb-0.5 select-none">
-          {/* Agent vs Chat Toggle */}
-          <div className="flex bg-vscode-inputBg/80 p-0.5 rounded border border-vscode-inputBorder/45">
+          {/* Mode Dropdown (Agent vs Chat) */}
+          <div className="relative" ref={modeDropdownRef}>
             <button
               type="button"
-              onClick={() => setMode('agent')}
-              className={`px-2 py-0.5 text-[9px] font-bold rounded-sm transition-all cursor-pointer ${mode === 'agent'
-                  ? 'bg-vscode-buttonBg text-white'
-                  : 'text-vscode-fg/50 hover:text-vscode-fg'
-                }`}
-              title="Agent Mode: Autonomous actions"
+              onClick={() => setIsModeDropdownOpen(!isModeDropdownOpen)}
+              className="flex items-center space-x-1 px-1.5 py-0.5 rounded bg-vscode-inputBg/85 border border-vscode-inputBorder/40 text-[9px] text-vscode-fg/75 hover:bg-vscode-inputBg transition-all cursor-pointer font-semibold"
+              title="Select Mode"
             >
-              Agent
+              {mode === 'agent' ? (
+                <Bot className="w-2.5 h-2.5 text-cyan-400 shrink-0" />
+              ) : (
+                <MessageSquare className="w-2.5 h-2.5 text-indigo-400 shrink-0" />
+              )}
+              <span className="capitalize">{mode}</span>
+              <ChevronDown className="w-2.5 h-2.5 text-vscode-fg/40 shrink-0" />
             </button>
-            <button
-              type="button"
-              onClick={() => setMode('chat')}
-              className={`px-2 py-0.5 text-[9px] font-bold rounded-sm transition-all cursor-pointer ${mode === 'chat'
-                  ? 'bg-vscode-buttonBg text-white'
-                  : 'text-vscode-fg/50 hover:text-vscode-fg'
-                }`}
-              title="Chat Mode: Q&A discussions"
-            >
-              Chat
-            </button>
+
+            {isModeDropdownOpen && (
+              <div className="absolute bottom-full left-0 mb-1.5 w-[110px] bg-vscode-inputBg border border-vscode-inputBorder/80 rounded-lg shadow-xl z-50 text-[10px] overflow-hidden animate-fade-in py-0.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    updateMode('agent');
+                    setIsModeDropdownOpen(false);
+                  }}
+                  className={`w-full text-left px-2 py-1 hover:bg-vscode-bg transition-colors flex items-center justify-between cursor-pointer font-bold ${
+                    mode === 'agent' ? 'text-cyan-400' : 'text-vscode-fg/80'
+                  }`}
+                >
+                  <div className="flex items-center space-x-1.5">
+                    <Bot className="w-3 h-3 text-cyan-400" />
+                    <span>Agent</span>
+                  </div>
+                  {mode === 'agent' && <Check className="w-2.5 h-2.5 text-cyan-400 shrink-0" />}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    updateMode('chat');
+                    setIsModeDropdownOpen(false);
+                  }}
+                  className={`w-full text-left px-2 py-1 hover:bg-vscode-bg transition-colors flex items-center justify-between cursor-pointer font-bold ${
+                    mode === 'chat' ? 'text-indigo-400' : 'text-vscode-fg/80'
+                  }`}
+                >
+                  <div className="flex items-center space-x-1.5">
+                    <MessageSquare className="w-3 h-3 text-indigo-400" />
+                    <span>Chat</span>
+                  </div>
+                  {mode === 'chat' && <Check className="w-2.5 h-2.5 text-indigo-400 shrink-0" />}
+                </button>
+              </div>
+            )}
           </div>
 
           <div className="flex items-center space-x-1.5">
