@@ -229,7 +229,7 @@ const ToolStep = ({
   let targetDesc = "";
 
   if (tool.name === 'list_files') {
-    title = 'Scanning workspace files';
+    title = tool.arguments.glob ? `Scanning files matching "${tool.arguments.glob}"` : 'Scanning workspace files';
   } else if (tool.name === 'read_file') {
     const filename = tool.arguments.path ? tool.arguments.path.split(/[/\\]/).pop() : '';
     title = `Reading file: ${filename || tool.arguments.path}`;
@@ -243,10 +243,21 @@ const ToolStep = ({
     targetDesc = tool.arguments.query;
   } else if (tool.name === 'write_file') {
     const filename = tool.arguments.path ? tool.arguments.path.split(/[/\\]/).pop() : '';
-    title = `Modifying file: ${filename || tool.arguments.path}`;
+    title = `Writing file: ${filename || tool.arguments.path}`;
     Icon = FileCode;
     iconColorClass = "text-emerald-400";
     targetDesc = tool.arguments.path;
+  } else if (tool.name === 'edit_file') {
+    const filename = tool.arguments.path ? tool.arguments.path.split(/[/\\]/).pop() : '';
+    title = `Editing file: ${filename || tool.arguments.path}`;
+    Icon = FileCode;
+    iconColorClass = "text-emerald-400";
+    targetDesc = tool.arguments.path;
+  } else if (tool.name === 'run_command') {
+    title = `Executing command: ${tool.arguments.cmd}`;
+    Icon = Terminal;
+    iconColorClass = "text-purple-400";
+    targetDesc = tool.arguments.cmd;
   }
 
   let statusBadge = '';
@@ -275,7 +286,8 @@ const ToolStep = ({
     StatusIcon = <AlertTriangle className="h-3.5 w-3.5 text-red-400 shrink-0" />;
   }
 
-  const isWrite = tool.name === 'write_file';
+  const isWrite = tool.name === 'write_file' || tool.name === 'edit_file';
+  const isCommand = tool.name === 'run_command';
 
   return (
     <div className="border border-vscode-inputBorder/70 bg-vscode-inputBg/35 rounded-lg overflow-hidden transition-all duration-200 shadow-sm hover:border-vscode-inputBorder">
@@ -301,7 +313,9 @@ const ToolStep = ({
         <div className="p-3 border-t border-vscode-inputBorder/45 space-y-2.5 text-xs bg-black/10">
           {targetDesc && (
             <div className="flex items-start justify-between bg-black/25 px-2.5 py-1.5 rounded border border-vscode-inputBorder/40 font-mono text-[11px]">
-              <span className="text-vscode-fg/50 mr-1 shrink-0">{tool.name === 'search_code' ? 'Query:' : 'Target:'}</span>
+              <span className="text-vscode-fg/50 mr-1 shrink-0">
+                {tool.name === 'search_code' ? 'Query:' : (tool.name === 'run_command' ? 'Command:' : 'Target:')}
+              </span>
               <span className="text-white/90 break-all text-right">{targetDesc}</span>
             </div>
           )}
@@ -309,7 +323,7 @@ const ToolStep = ({
             <div className="flex flex-col space-y-2.5 border border-amber-500/20 bg-amber-500/5 p-3 rounded-lg animate-fade-in">
               <div className="flex items-start space-x-2 text-amber-400 text-[11px] leading-relaxed">
                 <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5 animate-bounce" />
-                <span>An agent requests to create or overwrite a file. Please review the changes carefully before approving.</span>
+                <span>An agent requests to edit or write a file. Please review the changes carefully before approving.</span>
               </div>
               <div className="flex space-x-2 pt-1">
                 <button
@@ -329,6 +343,30 @@ const ToolStep = ({
                 <button
                   onClick={(e) => { e.stopPropagation(); onToolDecision(tool.id, false); }}
                   className="bg-red-700 hover:bg-red-600 text-white px-2.5 py-1.5 rounded font-medium text-[11px] transition-all cursor-pointer flex items-center justify-center space-x-1 shadow"
+                >
+                  <X className="h-3.5 w-3.5" />
+                  <span>Reject</span>
+                </button>
+              </div>
+            </div>
+          )}
+          {isCommand && tool.status === 'pending' && (
+            <div className="flex flex-col space-y-2.5 border border-amber-500/20 bg-amber-500/5 p-3 rounded-lg animate-fade-in">
+              <div className="flex items-start space-x-2 text-amber-400 text-[11px] leading-relaxed">
+                <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5 animate-bounce" />
+                <span>An agent requests to execute a terminal command. Please review the command carefully before approving.</span>
+              </div>
+              <div className="flex space-x-2 pt-1">
+                <button
+                  onClick={(e) => { e.stopPropagation(); onToolDecision(tool.id, true); }}
+                  className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white py-1.5 rounded font-medium text-[11px] transition-all cursor-pointer flex items-center justify-center space-x-1 shadow"
+                >
+                  <Check className="h-3.5 w-3.5" />
+                  <span>Approve</span>
+                </button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); onToolDecision(tool.id, false); }}
+                  className="flex-1 bg-red-700 hover:bg-red-600 text-white py-1.5 rounded font-medium text-[11px] transition-all cursor-pointer flex items-center justify-center space-x-1 shadow"
                 >
                   <X className="h-3.5 w-3.5" />
                   <span>Reject</span>

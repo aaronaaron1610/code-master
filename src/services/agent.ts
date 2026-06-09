@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as cp from 'child_process';
 import { streamChat, ChatMessage, ChatMessageContentPart, Attachment, getMessageTextContent } from './llm';
 
 export interface ToolCall {
@@ -271,7 +272,8 @@ export class Agent {
 
     try {
       if (tool.name === 'list_files') {
-        const files = await this.toolListFiles();
+        const glob = tool.arguments.glob;
+        const files = await this.toolListFiles(glob);
         tool.status = 'completed';
         tool.result = `Found ${files.length} files:\n` + files.join('\n');
         return tool.result;
@@ -290,7 +292,7 @@ export class Agent {
         const matches = await this.toolSearchCode(query);
         tool.status = 'completed';
         tool.result = matches.length > 0 
-          ? `Found search matches:\n` + matches.map(m => `${m.file}:${m.line}: ${m.text}`).join('\n')
+          ? `Found search matches:\n` + matches.map(m => `[FILE FOUND] ${m.file} — line ${m.line}: ${m.text}`).join('\n')
           : `No matches found for query: "${query}"`;
         return tool.result;
       }
@@ -374,6 +376,104 @@ export class Agent {
         return tool.result;
       }
 
+      if (tool.name === 'edit_file') {
+        const filePath = tool.arguments.path;
+        const searchContent = tool.arguments.search;
+        const replaceContent = tool.arguments.replace;
+
+        const modifiedContent = await this.toolEditFile(filePath, searchContent, replaceContent);
+
+        tool.status = 'pending';
+        
+        const tempDir = path.join(this.workspaceRoot, '.vscode', 'ai_coder_temp');
+        if (!fs.existsSync(tempDir)) {
+          fs.mkdirSync(tempDir, { recursive: true });
+        }
+        
+        const fileBase = path.basename(filePath);
+        const tempFilePath = path.join(tempDir, `proposed_${Date.now()}_${fileBase}`);
+        fs.writeFileSync(tempFilePath, modifiedContent, 'utf8');
+        tool.tempFilePath = tempFilePath;
+
+        const absoluteDest = this.resolvePath(filePath);
+        tool.arguments.originalPath = absoluteDest;
+
+        onStateUpdate({ 
+          messages: this.renderMessagesForUI(), 
+          isLlmActive: false,
+          usage: this.cumulativeUsage
+        });
+
+        const decision = await new Promise<{ approve: boolean }>((resolve) => {
+          this.activeResolver = resolve;
+        });
+
+        this.activeResolver = null;
+
+        if (decision.approve) {
+          tool.status = 'running';
+          onStateUpdate({ 
+            messages: this.renderMessagesForUI(), 
+            isLlmActive: false,
+            usage: this.cumulativeUsage
+          });
+          
+          fs.writeFileSync(absoluteDest, modifiedContent, 'utf8');
+          
+          tool.status = 'completed';
+          tool.result = `Successfully edited file: ${filePath}`;
+        } else {
+          tool.status = 'rejected';
+          tool.result = `User REJECTED modifying file: ${filePath}`;
+        }
+
+        try {
+          if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
+        } catch {
+          // ignore cleanup
+        }
+
+        return tool.result;
+      }
+
+      if (tool.name === 'run_command') {
+        const command = tool.arguments.cmd;
+        const safe = this.isCommandSafe(command);
+
+        if (!safe) {
+          tool.status = 'pending';
+          onStateUpdate({ 
+            messages: this.renderMessagesForUI(), 
+            isLlmActive: false,
+            usage: this.cumulativeUsage
+          });
+
+          const decision = await new Promise<{ approve: boolean }>((resolve) => {
+            this.activeResolver = resolve;
+          });
+
+          this.activeResolver = null;
+
+          if (!decision.approve) {
+            tool.status = 'rejected';
+            tool.result = `User REJECTED command execution: ${command}`;
+            return tool.result;
+          }
+        }
+
+        tool.status = 'running';
+        onStateUpdate({ 
+          messages: this.renderMessagesForUI(), 
+          isLlmActive: false,
+          usage: this.cumulativeUsage
+        });
+
+        const result = await this.toolRunCommand(command);
+        tool.status = 'completed';
+        tool.result = result;
+        return tool.result;
+      }
+
       throw new Error(`Unknown tool: ${tool.name}`);
 
     } catch (err: any) {
@@ -396,12 +496,13 @@ export class Agent {
   // TOOL IMPLEMENTATIONS
   // ----------------------------------------------------
 
-  private async toolListFiles(): Promise<string[]> {
+  private async toolListFiles(globPattern?: string): Promise<string[]> {
     if (!this.workspaceRoot) return [];
     
+    const pattern = globPattern || '**/*';
     // Find all files, ignoring node_modules, .git, and build artifacts
     const files = await vscode.workspace.findFiles(
-      '**/*',
+      pattern,
       '{**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/.vscode/ai_coder_temp/**}'
     );
 
@@ -452,6 +553,95 @@ export class Agent {
     return results;
   }
 
+  private isCommandSafe(command: string): boolean {
+    const cmd = command.trim().toLowerCase();
+    
+    // Check for destructive/unsafe patterns
+    const unsafeKeywords = [
+      'rm', 'del', 'rmdir', 'rd', 
+      'reset', 'clean', 'drop', 'delete', 
+      'sudo', 'administrator', 'admin'
+    ];
+    
+    for (const word of unsafeKeywords) {
+      const regex = new RegExp(`\\b${word}\\b`);
+      if (regex.test(cmd)) {
+        return false;
+      }
+    }
+    
+    // List of safe command prefixes
+    const safePrefixes = [
+      'npm install', 'pip install', 'cargo add',
+      'ls', 'dir', 'find', 'grep', 'cat',
+      'git status', 'git log', 'git diff', 'git show', 'git branch',
+      'npm run test', 'npm test', 'pytest', 'cargo test',
+      'npm run build', 'npm build', 'make', 'tsc'
+    ];
+    
+    for (const prefix of safePrefixes) {
+      if (cmd.startsWith(prefix)) {
+        return true;
+      }
+    }
+    
+    return false;
+  }
+
+  private async toolRunCommand(command: string): Promise<string> {
+    return new Promise((resolve) => {
+      cp.exec(command, { cwd: this.workspaceRoot }, (error, stdout, stderr) => {
+        let result = '';
+        if (stdout) result += stdout;
+        if (stderr) result += `STDERR:\n${stderr}`;
+        const exitCode = error ? error.code : 0;
+        result += `\nEXIT CODE: ${exitCode} ${exitCode === 0 ? '✓' : '✗'}`;
+        resolve(result);
+      });
+    });
+  }
+
+  private async toolEditFile(filePath: string, searchContent: string, replaceContent: string): Promise<string> {
+    const absolutePath = this.resolvePath(filePath);
+    if (!fs.existsSync(absolutePath)) {
+      throw new Error(`File not found: ${filePath}`);
+    }
+    
+    let content = fs.readFileSync(absolutePath, 'utf8');
+    
+    const normalize = (str: string) => str.replace(/\r\n/g, '\n');
+    const normalizedContent = normalize(content);
+    const normalizedSearch = normalize(searchContent);
+    
+    const index = normalizedContent.indexOf(normalizedSearch);
+    if (index === -1) {
+      const firstLine = searchContent.split('\n')[0] || '';
+      throw new Error(`Could not find the SEARCH block in ${filePath}. Make sure the code in <<<<<<< SEARCH matches the file exactly (including spacing and indentation).\nSearching for: ${firstLine}`);
+    }
+    
+    const lastIndex = normalizedContent.lastIndexOf(normalizedSearch);
+    if (index !== lastIndex) {
+      throw new Error(`The SEARCH block in ${filePath} is not unique. Please add more surrounding lines to uniquely identify the block.`);
+    }
+    
+    const isCrlf = content.includes('\r\n');
+    let finalReplace = replaceContent;
+    if (isCrlf) {
+      finalReplace = replaceContent.replace(/\n/g, '\r\n');
+    }
+    
+    const searchRegexEscaped = searchContent.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&').replace(/\r?\n/g, '\\r?\\n');
+    const searchRegex = new RegExp(searchRegexEscaped);
+    const match = content.match(searchRegex);
+    if (!match) {
+      content = content.replace(searchContent, finalReplace);
+    } else {
+      content = content.replace(match[0], finalReplace);
+    }
+    
+    return content;
+  }
+
   // ----------------------------------------------------
   // PARSER & PROMPT HELPERS
   // ----------------------------------------------------
@@ -480,12 +670,14 @@ export class Agent {
 
         // Clean out the XML tags from user message content in UI display
         let displayContent = contentStr
-          .replace(/<list_files\s*\/>/g, '')
+          .replace(/<list_files(?:\s+glob=["']([^"']+)["'])?\s*\/>/g, '')
           .replace(/<read_file\s+path=["']([^"']+)["']\s*\/>/g, '')
           .replace(/<search_code\s+query=["']([^"']+)["']\s*\/>/g, '')
           .replace(/<write_file\s+path=["']([^"']+)["']>([\s\S]*?)<\/write_file>/g, '')
-          // Also handle opening/incomplete tags while streaming
           .replace(/<write_file\s+path=["']([^"']+)["']>([\s\S]*)/g, '')
+          .replace(/<edit_file\s+path=["']([^"']+)["']>([\s\S]*?)<\/edit_file>/g, '')
+          .replace(/<edit_file\s+path=["']([^"']+)["']>([\s\S]*)/g, '')
+          .replace(/<run_command\s+cmd=["']([^"']+)["']\s*\/>/g, '')
           .trim();
 
         uiMessages.push({
@@ -512,20 +704,21 @@ export class Agent {
    */
   private parseActiveTools(content: string): ToolCall[] {
     const tools: ToolCall[] = [];
+    let match: RegExpExecArray | null;
 
     // 1. list_files
-    if (content.includes('<list_files/>') || content.includes('<list_files />')) {
+    const listRegex = /<list_files(?:\s+glob=["']([^"']+)["'])?\s*\/>/g;
+    while ((match = listRegex.exec(content)) !== null) {
       tools.push({
         id: 'tool_list',
         name: 'list_files',
-        arguments: {},
+        arguments: { glob: match[1] || undefined },
         status: 'pending'
       });
     }
 
     // 2. read_file
     const readRegex = /<read_file\s+path=["']([^"']+)["']\s*\/>/g;
-    let match;
     while ((match = readRegex.exec(content)) !== null) {
       tools.push({
         id: `tool_read_${match[1].replace(/[^a-zA-Z0-9]/g, '_')}`,
@@ -560,8 +753,50 @@ export class Agent {
           path: filePath, 
           content: fileContent 
         },
-        // If it's not complete, it's still streaming in the model response
         status: isComplete ? 'pending' : 'running'
+      });
+    }
+
+    // 5. edit_file (complete or streaming)
+    const editRegex = /<edit_file\s+path=["']([^"']+)["']>([\s\S]*?)(<\/edit_file>|$)/g;
+    while ((match = editRegex.exec(content)) !== null) {
+      const filePath = match[1];
+      const isComplete = match[3] === '</edit_file>';
+      const tagContent = match[2];
+      
+      let searchBlock = '';
+      let replaceBlock = '';
+      
+      const searchStartIndex = tagContent.indexOf('<<<<<<< SEARCH');
+      const searchEndIndex = tagContent.indexOf('=======');
+      const replaceEndIndex = tagContent.indexOf('>>>>>>> REPLACE');
+      
+      if (searchStartIndex !== -1 && searchEndIndex !== -1 && replaceEndIndex !== -1) {
+        searchBlock = tagContent.substring(searchStartIndex + '<<<<<<< SEARCH'.length, searchEndIndex).trim();
+        replaceBlock = tagContent.substring(searchEndIndex + '======='.length, replaceEndIndex).trim();
+      }
+
+      tools.push({
+        id: `tool_edit_${filePath.replace(/[^a-zA-Z0-9]/g, '_')}`,
+        name: 'edit_file',
+        arguments: { 
+          path: filePath, 
+          search: searchBlock,
+          replace: replaceBlock,
+          raw: tagContent
+        },
+        status: isComplete ? 'pending' : 'running'
+      });
+    }
+
+    // 6. run_command (complete or streaming)
+    const runRegex = /<run_command\s+cmd=["']([^"']+)["']\s*\/>/g;
+    while ((match = runRegex.exec(content)) !== null) {
+      tools.push({
+        id: `tool_run_${Math.random().toString(36).substring(2, 7)}`,
+        name: 'run_command',
+        arguments: { cmd: match[1] },
+        status: 'pending'
       });
     }
 
@@ -575,8 +810,8 @@ You are tasked with helping the user edit, create, inspect and analyze code insi
 You can perform actions using the following custom XML tags. Write the tags in your response. The extension will intercept them, run them, and feed the outputs back to you as a System Message.
 
 Available Tools:
-1. List all workspace files (excludes node_modules and metadata):
-<list_files/>
+1. List workspace files (excludes node_modules and metadata) with optional glob pattern:
+<list_files glob="src/**/*.ts"/> or <list_files/>
 
 2. Read file content:
 <read_file path="src/extension.ts"/>
@@ -589,10 +824,23 @@ Available Tools:
 [file content here]
 </write_file>
 
+5. Edit a specific block of code in an existing file (targeted edits):
+<edit_file path="src/extension.ts">
+<<<<<<< SEARCH
+[exact block of code to find]
+=======
+[block of code to replace it with]
+>>>>>>> REPLACE
+</edit_file>
+
+6. Run a terminal command (e.g. testing, package installs, git):
+<run_command cmd="npm run test"/>
+
 RULES:
 - You must explain your thinking to the user before issuing a tool call.
 - Run ONLY ONE tool tag per turn. Once you write a tag, STOP your response immediately. Do not generate closing words or additional explanations after the tag.
-- For write_file, the user will inspect a diff comparison before approving.
+- For write_file and edit_file, the user will inspect a diff comparison before approving.
+- For run_command, safe commands (like testing, installs, logs) execute automatically. Destructive or custom commands require user approval.
 - Be concise. Explain code clearly.`;
 
     const activeEditor = vscode.window.activeTextEditor;
