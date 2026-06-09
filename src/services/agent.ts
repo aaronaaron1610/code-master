@@ -59,7 +59,9 @@ export class Agent {
     }
     const cleanRelative = relativePath.trim().replace(/^[\/\\]/, '');
     const absolute = path.resolve(this.workspaceRoot, cleanRelative);
-    if (!absolute.startsWith(this.workspaceRoot)) {
+    
+    const relative = path.relative(this.workspaceRoot, absolute);
+    if (relative.startsWith('..') || path.isAbsolute(relative)) {
       throw new Error(`Path security violation: ${relativePath} lies outside workspace.`);
     }
     return absolute;

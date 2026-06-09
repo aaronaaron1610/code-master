@@ -186,8 +186,14 @@ const CodeBlock = ({ language, code }: { language: string; code: string }) => {
   );
 };
 
-const ThinkingProcess = ({ thought }: { thought: string }) => {
-  const [isOpen, setIsOpen] = useState(false);
+const ThinkingProcess = ({
+  thought,
+  defaultOpen = false
+}: {
+  thought: string;
+  defaultOpen?: boolean;
+}) => {
+  const [isOpen, setIsOpen] = useState(defaultOpen);
   return (
     <div className="mb-3.5 border border-amber-500/20 bg-amber-500/5 rounded-lg overflow-hidden transition-all duration-200">
       <button
