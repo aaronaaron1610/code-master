@@ -1,0 +1,88 @@
+
+{
+  "name": "code-master",
+  "displayName": "Code Master",
+  "description": "An AI Chat and Autonomous Code Generation Agent for VS Code.",
+  "version": "1.0.0",
+  "publisher": "antigravity",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/antigravity/code-master"
+  },
+  "bugs": {
+    "url": "https://github.com/antigravity/code-master/issues"
+  },
+  "icon": "src/webview/assets/logo.png",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "AI",
+    "Programming Languages",
+    "Software Development"
+  ],
+  "galleryBanner": {
+    "color": "#1e1e1e",
+    "theme": "dark"
+  },
+  "main": "./dist/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "code-master-sidebar",
+          "title": "Code Master",
+          "icon": "src/webview/assets/logo.png"
+        }
+      ]
+    },
+    "views": {
+      "code-master-sidebar": [
+        {
+          "type": "webview",
+          "id": "code-master.chatView",
+          "name": "AI Assistant"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "code-master.resetChat",
+        "title": "Code Master: Reset Conversation",
+        "icon": "$(clear-all)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "code-master.resetChat",
+          "when": "view == code-master.chatView",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "npm run compile:extension && npm run compile:webview",
+    "compile:extension": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --minify",
+    "compile:webview": "cd src/webview && npm run build",
+    "watch": "concurrently \"npm run watch:extension\" \"npm run watch:webview\"",
+    "watch:extension": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --watch",
+    "watch:webview": "cd src/webview && vite build --outDir ../../dist/webview --watch",
+    "postinstall": "cd src/webview && npm install"
+  },
+  "devDependencies": {
+    "@types/node": "^18.17.0",
+    "@types/vscode": "^1.80.0",
+    "concurrently": "^8.2.0",
+    "esbuild": "^0.19.2",
+    "typescript": "^5.1.6"
+  },
+  "dependencies": {
+    "pdf-parse": "^2.4.5",
+    "xlsx": "^0.18.5"
+  }
+}

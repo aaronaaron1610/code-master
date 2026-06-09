@@ -1,0 +1,16 @@
+
+# Exclude configuration files
+.env
+.gitignore
+tsconfig.json
+package-lock.json
+.vscode/**
+
+# Exclude source directories
+src/**
+!src/webview/
+!src/webview/assets/
+!src/webview/assets/logo.png
+
+# Exclude build dependencies that are already bundled
+# node_modules/
