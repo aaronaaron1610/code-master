@@ -87,7 +87,6 @@ interface Message {
   thought?: string;
   tools?: ToolCall[];
   attachments?: Attachment[];
-  agentName?: string;
 }
 
 interface ToolCall {
@@ -422,27 +421,6 @@ const ToolStep = ({
           )}
         </div>
       )}
-    </div>
-  );
-};
-
-const getAgentBadge = (agentName?: string) => {
-  if (!agentName) return null;
-  
-  let colors = "text-cyan-400 bg-cyan-500/10 border-cyan-500/20";
-  if (agentName.toLowerCase().includes('reader')) {
-    colors = "text-blue-400 bg-blue-500/10 border-blue-500/20";
-  } else if (agentName.toLowerCase().includes('writer') || agentName.toLowerCase().includes('change')) {
-    colors = "text-emerald-400 bg-emerald-500/10 border-emerald-500/20";
-  } else if (agentName.toLowerCase().includes('executor') || agentName.toLowerCase().includes('command')) {
-    colors = "text-purple-400 bg-purple-500/10 border-purple-500/20";
-  } else if (agentName.toLowerCase().includes('markdown') || agentName.toLowerCase().includes('document')) {
-    colors = "text-amber-400 bg-amber-500/10 border-amber-500/20";
-  }
-
-  return (
-    <div className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-mono font-bold tracking-wider uppercase border select-none ${colors}`}>
-      {agentName}
     </div>
   );
 };
@@ -901,11 +879,6 @@ export default function App() {
                         <Sparkles className="w-3 h-3" />
                       </div>
                       <div className="flex-1 bg-vscode-inputBg/15 border border-vscode-inputBorder/35 rounded-xl rounded-tl-sm px-3 py-2 space-y-2.5 shadow-sm overflow-hidden">
-                        {msg.agentName && (
-                          <div className="flex items-center space-x-1 pb-1">
-                            {getAgentBadge(msg.agentName)}
-                          </div>
-                        )}
 
                         {/* Collapsible reasoning history */}
                         {msg.thought && <ThinkingProcess thought={msg.thought} />}

@@ -13,8 +13,6 @@ export interface ToolCall {
   tempFilePath?: string;
 }
 
-export type AgentRole = 'Orchestrator' | 'Reader' | 'Writer' | 'Executor' | 'Markdown';
-
 export class Agent {
   private messages: ChatMessage[] = [];
   private workspaceRoot: string = '';
@@ -82,6 +80,14 @@ export class Agent {
     this.cumulativeUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 
     if (userContent) {
+      // The extension host has already assembled the user prompt:
+      //  - Image attachments are sent as `image_url` parts.
+      //  - Non-image attachments (PDF, Excel, text) are parsed to text and
+      //    embedded into the text part by `constructPromptWithFiles`.
+      // Therefore we must NOT re-inject the raw attachment content here, or
+      // we would duplicate parsed text and, worse, leak base64 data URLs
+      // (images, raw PDF/Excel blobs) into the textual prompt — which the
+      // model tends to echo back into the chat UI.
       const rawText = typeof userContent === 'string' ? userContent : getMessageTextContent(userContent);
       this.messages.push({ role: 'user', content: rawText, attachments });
     }
@@ -119,13 +125,13 @@ export class Agent {
             {
               onToken: (token) => {
                 responseText += token;
+                // Update UI state with current streaming content
                 onStateUpdate({
                   messages: [
                     ...this.renderMessagesForUI(),
                     {
                       id: streamingMessageId,
                       role: 'assistant',
-                      agentName: 'Orchestrator',
                       content: this.stripXmlTags(responseText),
                       thought: thoughtText,
                       isStreaming: true,
@@ -149,7 +155,6 @@ export class Agent {
                     {
                       id: streamingMessageId,
                       role: 'assistant',
-                      agentName: 'Orchestrator',
                       content: this.stripXmlTags(responseText),
                       thought: thoughtText,
                       isStreaming: true,
@@ -173,7 +178,6 @@ export class Agent {
                     {
                       id: streamingMessageId,
                       role: 'assistant',
-                      agentName: 'Orchestrator',
                       content: this.stripXmlTags(responseText),
                       thought: thoughtText,
                       isStreaming: true,
@@ -205,11 +209,12 @@ export class Agent {
         this.cumulativeUsage.cacheRead += lastUsageForIteration.cacheRead;
         this.cumulativeUsage.cacheWrite += lastUsageForIteration.cacheWrite;
 
+        // Parse final tools and attach them directly to the assistant message in history
         const finalTools = this.parseActiveTools(responseText);
 
+        // Push completed message to history with tools populated
         this.messages.push({
           role: 'assistant',
-          agentName: 'Orchestrator',
           content: responseText,
           thought: thoughtText || undefined,
           tools: finalTools.length > 0 ? finalTools : undefined
@@ -219,6 +224,7 @@ export class Agent {
         const tools = lastMsg.tools || [];
 
         if (tools.length === 0) {
+          // No more tools called, agent has finished answering
           loopActive = false;
           onStateUpdate({
             messages: this.renderMessagesForUI(),
@@ -228,31 +234,33 @@ export class Agent {
           break;
         }
 
+        // Execute all parsed tools in order
         for (let toolIndex = 0; toolIndex < tools.length; toolIndex++) {
           const tool = lastMsg.tools![toolIndex];
+          // Ensure we're operating on the same object reference stored in messages
           this.pendingToolCall = tool;
 
+          // Generic consecutive loop detection
           const toolSignature = `${tool.name}:${JSON.stringify(tool.arguments)}`;
-          if (toolSignature === lastToolSignature) {
-            consecutiveToolCallCount++;
-            if (consecutiveToolCallCount >= 3) {
-              loopActive = false;
-              this.messages.push({
-                role: 'assistant',
-                agentName: 'Orchestrator',
-                content: `⚠️ Stopped execution: Detected an infinite loop pattern. The agent repeatedly called the same tool (${tool.name}) with identical arguments.`
-              });
-              onStateUpdate({
-                messages: this.renderMessagesForUI(),
-                isLlmActive: false,
-                usage: this.cumulativeUsage
-              });
-              break;
-            }
-          } else {
-            lastToolSignature = toolSignature;
-            consecutiveToolCallCount = 1;
+        if (toolSignature === lastToolSignature) {
+          consecutiveToolCallCount++;
+          if (consecutiveToolCallCount >= 3) {
+            loopActive = false;
+            this.messages.push({
+              role: 'assistant',
+              content: `⚠️ Stopped execution: Detected an infinite loop pattern. The agent repeatedly called the same tool (${tool.name}) with identical arguments.`
+            });
+            onStateUpdate({
+              messages: this.renderMessagesForUI(),
+              isLlmActive: false,
+              usage: this.cumulativeUsage
+            });
+            break;
           }
+        } else {
+          lastToolSignature = toolSignature;
+          consecutiveToolCallCount = 1;
+        }
 
           onStateUpdate({
             messages: this.renderMessagesForUI(),
@@ -260,12 +268,14 @@ export class Agent {
             usage: this.cumulativeUsage
           });
 
-          let toolResult = await this.executeTool(tool, options, onStateUpdate);
+          // Execute tool (operate on reference stored in messages)
+          let toolResult = await this.executeTool(tool, onStateUpdate);
 
           if (consecutiveToolCallCount === 2) {
             toolResult += `\n\n[SYSTEM NOTE: You have executed the tool "${tool.name}" consecutively with the exact same arguments. If you are repeating because of a perceived error, verify if the exit status or outputs show success. If the task is finished, summarize the results and stop calling tools.]`;
           }
 
+          // Push tool response as a system message to context
           this.messages.push({
             role: 'system',
             content: `[Tool Result for ${tool.name}]:\n${toolResult}`
@@ -278,7 +288,6 @@ export class Agent {
         loopActive = false;
         this.messages.push({
           role: 'assistant',
-          agentName: 'Orchestrator',
           content: `⚠️ Error occurred during agent loop:\n${err.message || err}`
         });
         onStateUpdate({
@@ -295,27 +304,16 @@ export class Agent {
    */
   private async executeTool(
     tool: ToolCall,
-    options: { provider: string; model: string; apiKey: string; thinkingEffort?: string },
     onStateUpdate: (state: any) => void
   ): Promise<string> {
     tool.status = 'running';
     onStateUpdate({ 
       messages: this.renderMessagesForUI(), 
-      isLlmActive: tool.name === 'delegate' ? true : false,
+      isLlmActive: false,
       usage: this.cumulativeUsage
     });
 
     try {
-      if (tool.name === 'delegate') {
-        const agentRole = tool.arguments.agent;
-        const task = tool.arguments.task;
-        tool.status = 'running';
-        const result = await this.runSubAgent(agentRole, task, options, onStateUpdate);
-        tool.status = 'completed';
-        tool.result = result;
-        return tool.result;
-      }
-
       if (tool.name === 'list_files') {
         const glob = tool.arguments.glob;
         const files = await this.toolListFiles(glob);
@@ -904,7 +902,7 @@ export class Agent {
    * Helper that returns a custom styled list of messages.
    * Maps current messages and embeds active tool structures in the last assistant response.
    */
-  public renderMessagesForUI(): any[] {
+  private renderMessagesForUI(): any[] {
     const uiMessages: any[] = [];
     
     this.messages.forEach((msg, idx) => {
@@ -934,7 +932,6 @@ export class Agent {
         uiMessages.push({
           id: `msg_${idx}`,
           role: 'assistant',
-          agentName: msg.agentName || 'Orchestrator',
           content: safeContent,
           tools: tools.length > 0 ? tools : undefined
         });
@@ -964,8 +961,6 @@ export class Agent {
       .replace(/<edit_file\s+path=["']([^"']+)["']>([\s\S]*?)<\/edit_file>/g, '')
       .replace(/<edit_file\s+path=["']([^"']+)["']>([\s\S]*)/g, '')
       .replace(/<run_command\s+cmd=["']([^"']+)["']\s*\/>/g, '')
-      .replace(/<delegate\s+agent=["']([^"']+)["']>([\s\S]*?)<\/delegate>/g, '')
-      .replace(/<delegate\s+agent=["']([^"']+)["']>([\s\S]*)/g, '')
       .trim();
   }
 
@@ -1084,24 +1079,6 @@ export class Agent {
       });
     }
 
-    // 7. delegate (complete or streaming)
-    const delegateRegex = /<delegate\s+agent=["']([^"']+)["']>([\s\S]*?)(<\/delegate>|$)/g;
-    while ((match = delegateRegex.exec(content)) !== null) {
-      const agentRole = match[1];
-      const isComplete = match[3] === '</delegate>';
-      const taskContent = match[2];
-
-      tools.push({
-        id: this.generateToolId('delegate', agentRole),
-        name: 'delegate',
-        arguments: { 
-          agent: agentRole, 
-          task: taskContent 
-        },
-        status: isComplete ? 'pending' : 'running'
-      });
-    }
-
     return tools;
   }
 
@@ -1112,25 +1089,44 @@ export class Agent {
   }
 
   private getSystemPrompt(): string {
-    let prompt = `You are the "Orchestrator Agent", the coordinator of a multi-agent system inside VS Code.
-Your job is to understand the user's request, plan the necessary steps, and delegate them to the appropriate specialized sub-agents.
+    let prompt = `You are "AI Assistant", an autonomous coding assistant built inside VS Code.
+You are tasked with helping the user edit, create, inspect and analyze code inside their active workspace folder.
 
-You have access to the following specialized agents:
-- "Reader" Agent (handles finding files, searching code, reading file contents)
-- "Writer" Agent (handles editing existing files and writing new files)
-- "Executor" Agent (handles executing command-line commands and running tests)
-- "Markdown" Agent (handles generating markdown files, plans, reports, and documentation)
+You can perform actions using the following custom XML tags. Write the tags in your response. The extension will intercept them, run them, and feed the outputs back to you as a System Message.
 
-To delegate a task to a specialized agent, use the following custom XML tag:
-<delegate agent="Reader|Writer|Executor|Markdown">
-[description of the task for the agent, including all relevant context]
-</delegate>
+Available Tools:
+1. List workspace files (excludes node_modules and metadata) with optional glob pattern:
+<list_files glob="src/**/*.ts"/> or <list_files/>
+
+2. Read file content (optionally specify line range with line_start and line_end):
+<read_file path="src/extension.ts" line_start="10" line_end="50"/> or <read_file path="src/extension.ts"/>
+
+3. Search code for substrings/pattern:
+<search_code query="pattern to find"/>
+
+4. Write a new file or completely overwrite an existing file:
+<write_file path="src/newFile.ts">
+[file content here]
+</write_file>
+
+5. Edit a specific block of code in an existing file (targeted edits):
+<edit_file path="src/extension.ts">
+<<<<<<< SEARCH
+[exact block of code to find]
+=======
+[block of code to replace it with]
+>>>>>>> REPLACE
+</edit_file>
+
+6. Run a terminal command (e.g. testing, package installs, git):
+<run_command cmd="npm run test"/>
 
 RULES:
-- You must explain your plan to the user before delegating a task.
-- Run ONLY ONE delegate tag per turn. Once you write a tag, STOP your response immediately. Do not generate closing words or additional explanations after the tag.
-- Once the sub-agent returns its result, review it and decide on the next step.
-- When all tasks are complete, summarize the results for the user and stop.`;
+- You must explain your thinking to the user before issuing a tool call.
+- Run ONLY ONE tool tag per turn. Once you write a tag, STOP your response immediately. Do not generate closing words or additional explanations after the tag.
+- For write_file and edit_file, the user will inspect a diff comparison before approving.
+- For run_command, safe commands (like testing, installs, logs) execute automatically. Destructive or custom commands require user approval.
+- Be concise. Explain code clearly.`;
 
     let architectureDetails = '';
     if (this.workspaceRoot) {
@@ -1162,323 +1158,6 @@ RULES:
     }
 
     return prompt;
-  }
-
-  private getSubAgentSystemPrompt(role: string): string {
-    let architectureDetails = '';
-    if (this.workspaceRoot) {
-      try {
-        const reportsDir = path.join(this.workspaceRoot, '.cm_reports');
-        const archPathMd = path.join(reportsDir, 'ARCHITECTURE.md');
-        const archPathLower = path.join(reportsDir, 'architecture.md');
-        if (fs.existsSync(archPathMd)) {
-          architectureDetails = fs.readFileSync(archPathMd, 'utf8');
-        } else if (fs.existsSync(archPathLower)) {
-          architectureDetails = fs.readFileSync(archPathLower, 'utf8');
-        }
-      } catch (e) {
-        // Ignore read errors
-      }
-    }
-
-    let activeFilePrompt = '';
-    const activeEditor = vscode.window.activeTextEditor;
-    if (activeEditor && activeEditor.document.uri.scheme === 'file') {
-      const doc = activeEditor.document;
-      const relativePath = vscode.workspace.asRelativePath(doc.uri);
-      const text = doc.getText();
-      const cappedText = text.length > 50000 ? text.substring(0, 50000) + '\n... [truncated]' : text;
-      activeFilePrompt = `\n\nActive open file in editor:\nPath: ${relativePath}\n\`\`\`\n${cappedText}\n\`\`\``;
-    }
-
-    let basePrompt = '';
-
-    if (role === 'Reader') {
-      basePrompt = `You are the "Reader Agent", a specialized assistant focused purely on finding, searching, and reading files in the workspace.
-Your goal is to locate code, read its content, and answer questions about the structure/contents of the workspace.
-
-You can perform actions using the following custom XML tags:
-- <list_files glob="pattern"/> or <list_files/>
-- <read_file path="file" line_start="start" line_end="end"/> or <read_file path="file"/>
-- <search_code query="pattern"/>
-
-RULES:
-- You must explain your thinking to the user/Orchestrator before issuing a tool call.
-- Run ONLY ONE tool tag per turn. Once you write a tag, STOP your response immediately.
-- Once you have gathered all the necessary information, summarize it clearly to return to the Orchestrator. Do not attempt to write code changes or execute commands.`;
-    } else if (role === 'Writer') {
-      basePrompt = `You are the "Writer Agent" (Code Change Agent), a specialized assistant focused on making code modifications, writing new files, and editing existing files.
-
-You can perform actions using the following custom XML tags:
-- <write_file path="file">content</write_file>
-- <edit_file path="file">
-<<<<<<< SEARCH
-[exact block]
-=======
-[replace block]
->>>>>>> REPLACE
-</edit_file>
-- <read_file path="file" line_start="start" line_end="end"/> or <read_file path="file"/> (Only use read_file if you need to verify line numbers or edit blocks to make a change successfully!)
-
-RULES:
-- You must explain your thinking/changes before issuing a tool call.
-- Run ONLY ONE tool tag per turn. Once you write a tag, STOP your response immediately.
-- For write_file and edit_file, the user will inspect a diff comparison before approving.
-- After applying the edits/writes, report the outcome to the Orchestrator.`;
-    } else if (role === 'Executor') {
-      basePrompt = `You are the "Executor Agent" (Command Line Execute Agent), a specialized assistant focused on executing command-line commands, running tests, packages installation, building/compiling, and diagnostics.
-
-You can perform actions using the following custom XML tags:
-- <run_command cmd="command"/>
-
-RULES:
-- You must explain your thinking before issuing a tool call.
-- Run ONLY ONE tool tag per turn. Once you write a tag, STOP your response immediately.
-- Safe commands (like testing, installs, logs) execute automatically. Destructive or custom commands require user approval.
-- After executing, check the exit code and outputs, and report the diagnostic results back to the Orchestrator.`;
-    } else if (role === 'Markdown') {
-      basePrompt = `You are the "Markdown Agent" (Markdown Creator Agent), a specialized assistant focused on creating markdown reports, project plans, summaries, and documentation in the workspace.
-
-You can perform actions using the following custom XML tags:
-- <write_file path="file.md">markdown content</write_file>
-
-RULES:
-- You must explain your thinking before issuing a tool call.
-- Run ONLY ONE tool tag per turn. Once you write a tag, STOP your response immediately.
-- Focus purely on generating markdown/documentation files in the workspace.
-- After creating the documentation, summarize what was generated and report back to the Orchestrator.`;
-    }
-
-    if (architectureDetails) {
-      basePrompt += `\n\nImportant: You must align your code modifications and understanding with the project's architecture described below. Always review it first before starting your work:\n\`\`\`markdown\n${architectureDetails}\n\`\`\``;
-    }
-    
-    if (activeFilePrompt) {
-      basePrompt += activeFilePrompt;
-    }
-
-    return basePrompt;
-  }
-
-  private async runSubAgent(
-    role: string,
-    task: string,
-    options: { provider: string; model: string; apiKey: string; thinkingEffort?: string },
-    onStateUpdate: (state: any) => void
-  ): Promise<string> {
-    this.messages.push({
-      role: 'system',
-      content: `[System]: Activating ${role} Agent to perform task: "${task}"`
-    });
-
-    onStateUpdate({
-      messages: this.renderMessagesForUI(),
-      isLlmActive: true,
-      usage: this.cumulativeUsage
-    });
-
-    let loopActive = true;
-    let lastToolSignature = '';
-    let consecutiveToolCallCount = 0;
-    let finalSubAgentResponse = '';
-
-    while (loopActive) {
-      if (this.abortController?.signal.aborted) {
-        loopActive = false;
-        break;
-      }
-
-      onStateUpdate({
-        messages: this.renderMessagesForUI(),
-        isLlmActive: true,
-        usage: this.cumulativeUsage
-      });
-
-      let responseText = '';
-      let thoughtText = '';
-      let streamingMessageId = Math.random().toString();
-      let lastUsageForIteration = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-      
-      const subAgentSystemPrompt = this.getSubAgentSystemPrompt(role);
-
-      try {
-        await new Promise<void>((resolve, reject) => {
-          streamChat(
-            options.provider,
-            options.model,
-            this.messages,
-            options.apiKey,
-            subAgentSystemPrompt,
-            {
-              onToken: (token) => {
-                responseText += token;
-                onStateUpdate({
-                  messages: [
-                    ...this.renderMessagesForUI(),
-                    {
-                      id: streamingMessageId,
-                      role: 'assistant',
-                      agentName: role,
-                      content: this.stripXmlTags(responseText),
-                      thought: thoughtText,
-                      isStreaming: true,
-                      tools: this.parseActiveTools(responseText)
-                    }
-                  ],
-                  isLlmActive: true,
-                  usage: {
-                    input: this.cumulativeUsage.input + lastUsageForIteration.input,
-                    output: this.cumulativeUsage.output + lastUsageForIteration.output,
-                    cacheRead: this.cumulativeUsage.cacheRead + lastUsageForIteration.cacheRead,
-                    cacheWrite: this.cumulativeUsage.cacheWrite + lastUsageForIteration.cacheWrite
-                  }
-                });
-              },
-              onThought: (thought) => {
-                thoughtText += thought;
-                onStateUpdate({
-                  messages: [
-                    ...this.renderMessagesForUI(),
-                    {
-                      id: streamingMessageId,
-                      role: 'assistant',
-                      agentName: role,
-                      content: this.stripXmlTags(responseText),
-                      thought: thoughtText,
-                      isStreaming: true,
-                      tools: this.parseActiveTools(responseText)
-                    }
-                  ],
-                  isLlmActive: true,
-                  usage: {
-                    input: this.cumulativeUsage.input + lastUsageForIteration.input,
-                    output: this.cumulativeUsage.output + lastUsageForIteration.output,
-                    cacheRead: this.cumulativeUsage.cacheRead + lastUsageForIteration.cacheRead,
-                    cacheWrite: this.cumulativeUsage.cacheWrite + lastUsageForIteration.cacheWrite
-                  }
-                });
-              },
-              onUsage: (u) => {
-                lastUsageForIteration = u;
-                onStateUpdate({
-                  messages: [
-                    ...this.renderMessagesForUI(),
-                    {
-                      id: streamingMessageId,
-                      role: 'assistant',
-                      agentName: role,
-                      content: this.stripXmlTags(responseText),
-                      thought: thoughtText,
-                      isStreaming: true,
-                      tools: this.parseActiveTools(responseText)
-                    }
-                  ],
-                  isLlmActive: true,
-                  usage: {
-                    input: this.cumulativeUsage.input + u.input,
-                    output: this.cumulativeUsage.output + u.output,
-                    cacheRead: this.cumulativeUsage.cacheRead + u.cacheRead,
-                    cacheWrite: this.cumulativeUsage.cacheWrite + u.cacheWrite
-                  }
-                });
-              },
-              onError: (err) => reject(new Error(err)),
-              onComplete: (fullText) => {
-                responseText = fullText;
-                resolve();
-              }
-            },
-            this.abortController?.signal,
-            options.thinkingEffort
-          );
-        });
-
-        this.cumulativeUsage.input += lastUsageForIteration.input;
-        this.cumulativeUsage.output += lastUsageForIteration.output;
-        this.cumulativeUsage.cacheRead += lastUsageForIteration.cacheRead;
-        this.cumulativeUsage.cacheWrite += lastUsageForIteration.cacheWrite;
-
-        const finalTools = this.parseActiveTools(responseText);
-
-        this.messages.push({
-          role: 'assistant',
-          agentName: role,
-          content: responseText,
-          thought: thoughtText || undefined,
-          tools: finalTools.length > 0 ? finalTools : undefined
-        });
-
-        const lastMsg = this.messages[this.messages.length - 1];
-        const tools = lastMsg.tools || [];
-
-        if (tools.length === 0) {
-          finalSubAgentResponse = responseText;
-          loopActive = false;
-          break;
-        }
-
-        for (let toolIndex = 0; toolIndex < tools.length; toolIndex++) {
-          const tool = lastMsg.tools![toolIndex];
-          this.pendingToolCall = tool;
-
-          const toolSignature = `${tool.name}:${JSON.stringify(tool.arguments)}`;
-          if (toolSignature === lastToolSignature) {
-            consecutiveToolCallCount++;
-            if (consecutiveToolCallCount >= 3) {
-              loopActive = false;
-              this.messages.push({
-                role: 'assistant',
-                agentName: role,
-                content: `⚠️ Stopped execution: Detected an infinite loop pattern. The agent repeatedly called the same tool (${tool.name}) with identical arguments.`
-              });
-              onStateUpdate({
-                messages: this.renderMessagesForUI(),
-                isLlmActive: false,
-                usage: this.cumulativeUsage
-              });
-              break;
-            }
-          } else {
-            lastToolSignature = toolSignature;
-            consecutiveToolCallCount = 1;
-          }
-
-          onStateUpdate({
-            messages: this.renderMessagesForUI(),
-            isLlmActive: false,
-            usage: this.cumulativeUsage
-          });
-
-          let toolResult = await this.executeTool(tool, options, onStateUpdate);
-
-          if (consecutiveToolCallCount === 2) {
-            toolResult += `\n\n[SYSTEM NOTE: You have executed the tool "${tool.name}" consecutively with the exact same arguments. If you are repeating because of a perceived error, verify if the exit status or outputs show success. If the task is finished, summarize the results and stop calling tools.]`;
-          }
-
-          this.messages.push({
-            role: 'system',
-            content: `[Tool Result for ${tool.name}]:\n${toolResult}`
-          });
-
-          this.pendingToolCall = null;
-        }
-
-      } catch (err: any) {
-        loopActive = false;
-        this.messages.push({
-          role: 'assistant',
-          agentName: role,
-          content: `⚠️ Error occurred during sub-agent loop:\n${err.message || err}`
-        });
-        onStateUpdate({
-          messages: this.renderMessagesForUI(),
-          isLlmActive: false,
-          usage: this.cumulativeUsage
-        });
-      }
-    }
-
-    return finalSubAgentResponse;
   }
 
   stop() {

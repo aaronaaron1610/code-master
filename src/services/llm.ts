@@ -22,9 +22,7 @@ export interface ChatMessage {
   thought?: string;
   tools?: any[];
   attachments?: Attachment[];
-  agentName?: string;
 }
-
 
 export function getMessageTextContent(content: string | ChatMessageContentPart[]): string {
   if (typeof content === 'string') {
