@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as https from 'https';
+import * as dotenv from 'dotenv';
 import { Agent } from './services/agent';
 import { streamChat, ChatMessage, Attachment, ChatMessageContentPart, getMessageTextContent, constructPromptWithFiles } from './services/llm';
 
@@ -589,38 +590,70 @@ function parseKeyFromEnv(envPath: string): string {
 }
 
 function getOpenRouterKeyFromEnv(extensionPath?: string): string {
+  // Try process.env first if it was already loaded or set via environment
+  if (process.env.OPENROUTER_API_KEY) {
+    return process.env.OPENROUTER_API_KEY;
+  }
+
   // 1. Try active workspace folders first
   const folders = vscode.workspace.workspaceFolders;
   if (folders && folders.length > 0) {
     const workspaceRoot = folders[0].uri.fsPath;
     const envPath = path.join(workspaceRoot, '.env');
-    const key = parseKeyFromEnv(envPath);
-    if (key) {
-      return key;
+    if (fs.existsSync(envPath)) {
+      try {
+        const result = dotenv.config({ path: envPath });
+        if (result.parsed && result.parsed.OPENROUTER_API_KEY) {
+          return result.parsed.OPENROUTER_API_KEY;
+        }
+      } catch (e) {
+        console.error('Error loading env via dotenv:', e);
+      }
+      // Fallback
+      const key = parseKeyFromEnv(envPath);
+      if (key) {
+        return key;
+      }
     }
   }
 
   // 2. Try extension path fallback
   if (extensionPath) {
     const envPath = path.join(extensionPath, '.env');
-    const key = parseKeyFromEnv(envPath);
-    if (key) {
-      return key;
+    if (fs.existsSync(envPath)) {
+      try {
+        const result = dotenv.config({ path: envPath });
+        if (result.parsed && result.parsed.OPENROUTER_API_KEY) {
+          return result.parsed.OPENROUTER_API_KEY;
+        }
+      } catch (e) {}
+      const key = parseKeyFromEnv(envPath);
+      if (key) {
+        return key;
+      }
     }
   }
 
   // 3. Try bundler-level directory fallback
   try {
     const fallbackPath = path.join(__dirname, '..', '.env');
-    const key = parseKeyFromEnv(fallbackPath);
-    if (key) {
-      return key;
+    if (fs.existsSync(fallbackPath)) {
+      try {
+        const result = dotenv.config({ path: fallbackPath });
+        if (result.parsed && result.parsed.OPENROUTER_API_KEY) {
+          return result.parsed.OPENROUTER_API_KEY;
+        }
+      } catch (e) {}
+      const key = parseKeyFromEnv(fallbackPath);
+      if (key) {
+        return key;
+      }
     }
   } catch (e) {
     // Ignore
   }
 
-  return '';
+  return process.env.OPENROUTER_API_KEY || '';
 }
 
 function fetchOpenRouterModels(): Promise<OpenRouterModel[]> {

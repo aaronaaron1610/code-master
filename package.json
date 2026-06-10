@@ -66,10 +66,10 @@
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "npm run compile:extension && npm run compile:webview",
-    "compile:extension": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --minify",
+    "compile:extension": "node build.js",
     "compile:webview": "cd src/webview && npm run build",
     "watch": "concurrently \"npm run watch:extension\" \"npm run watch:webview\"",
-    "watch:extension": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --watch",
+    "watch:extension": "node build.js --watch",
     "watch:webview": "cd src/webview && vite build --outDir ../../dist/webview --watch",
     "postinstall": "cd src/webview && npm install"
   },
@@ -81,6 +81,7 @@
     "typescript": "^5.1.6"
   },
   "dependencies": {
+    "dotenv": "^17.4.2",
     "pdf-parse": "^2.4.5",
     "xlsx": "^0.18.5"
   }
