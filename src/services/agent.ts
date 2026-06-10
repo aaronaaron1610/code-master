@@ -952,6 +952,25 @@ RULES:
 - For run_command, safe commands (like testing, installs, logs) execute automatically. Destructive or custom commands require user approval.
 - Be concise. Explain code clearly.`;
 
+    let architectureDetails = '';
+    if (this.workspaceRoot) {
+      try {
+        const archPathMd = path.join(this.workspaceRoot, 'ARCHITECTURE.md');
+        const archPathLower = path.join(this.workspaceRoot, 'architecture.md');
+        if (fs.existsSync(archPathMd)) {
+          architectureDetails = fs.readFileSync(archPathMd, 'utf8');
+        } else if (fs.existsSync(archPathLower)) {
+          architectureDetails = fs.readFileSync(archPathLower, 'utf8');
+        }
+      } catch (e) {
+        // Ignore read errors
+      }
+    }
+
+    if (architectureDetails) {
+      prompt += `\n\nImportant: You must align your code modifications and understanding with the project's architecture described below. Always review it first before starting your work:\n\`\`\`markdown\n${architectureDetails}\n\`\`\``;
+    }
+
     const activeEditor = vscode.window.activeTextEditor;
     if (activeEditor && activeEditor.document.uri.scheme === 'file') {
       const doc = activeEditor.document;

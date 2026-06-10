@@ -76,9 +76,26 @@ class CodeMasterChatViewProvider implements vscode.WebviewViewProvider {
     
     watcher.onDidChange(changeListener);
     watcher.onDidCreate(changeListener);
+
+    // Watch architecture file
+    const archWatcher = vscode.workspace.createFileSystemWatcher(
+      '**/{ARCHITECTURE,architecture}.md'
+    );
+    
+    const checkArchFile = () => {
+      this.postMessageToWebview({
+        type: 'architectureState',
+        exists: this.doesArchitectureFileExist()
+      });
+    };
+
+    archWatcher.onDidCreate(checkArchFile);
+    archWatcher.onDidChange(checkArchFile);
+    archWatcher.onDidDelete(checkArchFile);
     
     webviewView.onDidDispose(() => {
       watcher.dispose();
+      archWatcher.dispose();
     });
 
     webviewView.webview.onDidReceiveMessage(async (data) => {
@@ -104,7 +121,8 @@ class CodeMasterChatViewProvider implements vscode.WebviewViewProvider {
             provider: this.currentProvider,
             model: this.currentModel,
             mode: this.currentMode,
-            thinkingEffort: this.currentThinkingEffort
+            thinkingEffort: this.currentThinkingEffort,
+            architectureExists: this.doesArchitectureFileExist()
           });
           break;
         case 'sendMessage':
@@ -144,7 +162,8 @@ class CodeMasterChatViewProvider implements vscode.WebviewViewProvider {
       provider: this.currentProvider,
       model: this.currentModel,
       mode: this.currentMode,
-      thinkingEffort: this.currentThinkingEffort
+      thinkingEffort: this.currentThinkingEffort,
+      architectureExists: this.doesArchitectureFileExist()
     });
   }
 
@@ -153,8 +172,17 @@ class CodeMasterChatViewProvider implements vscode.WebviewViewProvider {
     const workspacePath = folders && folders.length > 0 ? folders[0].uri.fsPath : '';
     this.postMessageToWebview({
       type: 'workspace',
-      path: workspacePath
+      path: workspacePath,
+      architectureExists: this.doesArchitectureFileExist()
     });
+  }
+
+  private doesArchitectureFileExist(): boolean {
+    const folders = vscode.workspace.workspaceFolders;
+    const workspacePath = folders && folders.length > 0 ? folders[0].uri.fsPath : '';
+    if (!workspacePath) return false;
+    return fs.existsSync(path.join(workspacePath, 'ARCHITECTURE.md')) ||
+           fs.existsSync(path.join(workspacePath, 'architecture.md'));
   }
 
   private async sendInitialState() {
@@ -188,7 +216,8 @@ class CodeMasterChatViewProvider implements vscode.WebviewViewProvider {
       keys: {
         openrouterKey: openrouterKey ? `sk-or-...${openrouterKey.slice(-6)}` : ''
       },
-      models: this.openRouterModels
+      models: this.openRouterModels,
+      architectureExists: this.doesArchitectureFileExist()
     });
   }
 

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   Send, Sparkles, RefreshCw, ChevronDown, Check, X,
   Terminal, FileText, Search, FileCode, CheckCircle, AlertTriangle,
-  Paperclip, Bot, MessageSquare
+  Paperclip, Bot, MessageSquare, Compass
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import logo from './assets/logo.png';
@@ -405,6 +405,7 @@ export default function App() {
   const [isLlmActive, setIsLlmActive] = useState(false);
   const [workspacePath, setWorkspacePath] = useState('');
   const [usage, setUsage] = useState<{ input: number; output: number; cacheRead: number; cacheWrite: number } | null>(null);
+  const [architectureExists, setArchitectureExists] = useState(false);
 
   const [thinkingEffort, setThinkingEffort] = useState<'none' | 'low' | 'medium' | 'high' | 'xhigh'>('medium');
   const [isThinkingDropdownOpen, setIsThinkingDropdownOpen] = useState(false);
@@ -512,6 +513,7 @@ export default function App() {
           if (data.workspacePath) setWorkspacePath(data.workspacePath);
           if (data.models) setModelsList(data.models);
           if (data.thinkingEffort) setThinkingEffort(data.thinkingEffort);
+          if (data.architectureExists !== undefined) setArchitectureExists(data.architectureExists);
           setUsage(data.usage || null);
           break;
         case 'activeState':
@@ -519,6 +521,10 @@ export default function App() {
           break;
         case 'workspace':
           setWorkspacePath(data.path);
+          if (data.architectureExists !== undefined) setArchitectureExists(data.architectureExists);
+          break;
+        case 'architectureState':
+          setArchitectureExists(data.exists);
           break;
       }
     };
@@ -541,6 +547,25 @@ export default function App() {
       textareaRef.current.style.height = `${newHeight}px`;
     }
   }, [input]);
+
+  const handleStartCodeDiscovery = () => {
+    if (isLlmActive) return;
+    updateMode('agent');
+    
+    const promptText = "Analyze this workspace's files, structure, and technologies, and create a comprehensive ARCHITECTURE.md file in the workspace root that details the project's architecture.";
+    
+    vscode.postMessage({
+      type: 'sendMessage',
+      text: promptText,
+      attachments: [],
+      options: {
+        mode: 'agent',
+        provider: 'OpenRouter',
+        model,
+        thinkingEffort: modelSupportsReasoning(model) ? thinkingEffort : undefined
+      }
+    });
+  };
 
   const handleSendMessage = () => {
     if ((!input.trim() && attachments.length === 0) || isLlmActive) return;
@@ -701,6 +726,30 @@ export default function App() {
               <p className="text-[11px] text-vscode-fg/50 max-w-[210px] mx-auto leading-relaxed">
                 Ask anything about the workspace, or let the Agent run tasks.
               </p>
+            </div>
+
+            <div className="pt-2">
+              {architectureExists ? (
+                <button
+                  type="button"
+                  onClick={handleStartCodeDiscovery}
+                  disabled={isLlmActive}
+                  className="inline-flex items-center space-x-2 px-4 py-2 rounded-lg bg-vscode-inputBg border border-vscode-inputBorder/55 text-[11px] text-white hover:bg-vscode-inputBg/80 transition-all cursor-pointer font-bold shadow-md hover:border-vscode-activeBorder hover:scale-[1.02] active:scale-95 duration-200"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 text-cyan-400 shrink-0 ${isLlmActive ? 'animate-spin' : ''}`} />
+                  <span>Refresh Discovery</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleStartCodeDiscovery}
+                  disabled={isLlmActive}
+                  className="inline-flex items-center space-x-2 px-5 py-2.5 rounded-lg bg-gradient-to-r from-cyan-500 to-indigo-600 hover:from-cyan-400 hover:to-indigo-500 text-[11px] text-white transition-all cursor-pointer font-bold shadow-md shadow-indigo-500/35 hover:scale-[1.02] active:scale-95 duration-200"
+                >
+                  <Compass className="w-3.5 h-3.5 text-white shrink-0 animate-pulse" />
+                  <span>Code Discovery</span>
+                </button>
+              )}
             </div>
           </div>
         ) : (
