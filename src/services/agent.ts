@@ -80,13 +80,16 @@ export class Agent {
     this.cumulativeUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 
     if (userContent) {
-      // Inject attachments into the textual prompt so the LLM sees file contents.
+      // The extension host has already assembled the user prompt:
+      //  - Image attachments are sent as `image_url` parts.
+      //  - Non-image attachments (PDF, Excel, text) are parsed to text and
+      //    embedded into the text part by `constructPromptWithFiles`.
+      // Therefore we must NOT re-inject the raw attachment content here, or
+      // we would duplicate parsed text and, worse, leak base64 data URLs
+      // (images, raw PDF/Excel blobs) into the textual prompt — which the
+      // model tends to echo back into the chat UI.
       const rawText = typeof userContent === 'string' ? userContent : getMessageTextContent(userContent);
-      const attachedText = attachments && attachments.length > 0
-        ? constructPromptWithFiles(rawText, attachments.map(a => ({ name: a.name, content: a.content })))
-        : rawText;
-
-      this.messages.push({ role: 'user', content: attachedText, attachments });
+      this.messages.push({ role: 'user', content: rawText, attachments });
     }
 
     const systemPrompt = this.getSystemPrompt();
@@ -881,6 +884,21 @@ export class Agent {
   // ----------------------------------------------------
 
   /**
+   * Strips leaked base64 / data URLs from assistant content so they never
+   * reach the UI. Models occasionally echo image / file payloads back into
+   * their text response; rendering those as markdown would dump hundreds of
+   * KB of base64 into the chat.
+   */
+  private scrubLeakedBinary(content: string): string {
+    if (!content) return content;
+    return content
+      // data:[<mime>];base64,<payload>  (with quotes / parens / whitespace)
+      .replace(/data:[a-zA-Z0-9+\-./]+;base64,[A-Za-z0-9+/=\s"')]+/g, '[binary data omitted]')
+      // data:[<mime>],<payload>  (non-base64 data URLs, rare but possible)
+      .replace(/data:[a-zA-Z0-9+\-./]+,[^\s)"]+/g, '[binary data omitted]');
+  }
+
+  /**
    * Helper that returns a custom styled list of messages.
    * Maps current messages and embeds active tool structures in the last assistant response.
    */
@@ -900,12 +918,21 @@ export class Agent {
           if (matchedToolIndex !== -1) {
             tools[matchedToolIndex] = this.pendingToolCall;
           }
+
+        // Sanitize the live streaming content for the same message so leaked
+        // base64 is removed in real-time as the model emits it.
+        if (isLast && this.pendingToolCall) {
+          uiMessages[uiMessages.length - 1].content = this.scrubLeakedBinary(uiMessages[uiMessages.length - 1].content);
         }
+        }
+
+        const stripped = this.stripXmlTags(contentStr);
+        const safeContent = isLast ? this.scrubLeakedBinary(stripped) : this.scrubLeakedBinary(stripped);
 
         uiMessages.push({
           id: `msg_${idx}`,
           role: 'assistant',
-          content: this.stripXmlTags(contentStr),
+          content: safeContent,
           tools: tools.length > 0 ? tools : undefined
         });
       } else if (msg.role === 'user') {
@@ -1104,8 +1131,9 @@ RULES:
     let architectureDetails = '';
     if (this.workspaceRoot) {
       try {
-        const archPathMd = path.join(this.workspaceRoot, 'ARCHITECTURE.md');
-        const archPathLower = path.join(this.workspaceRoot, 'architecture.md');
+        const reportsDir = path.join(this.workspaceRoot, '.cm_reports');
+        const archPathMd = path.join(reportsDir, 'ARCHITECTURE.md');
+        const archPathLower = path.join(reportsDir, 'architecture.md');
         if (fs.existsSync(archPathMd)) {
           architectureDetails = fs.readFileSync(archPathMd, 'utf8');
         } else if (fs.existsSync(archPathLower)) {

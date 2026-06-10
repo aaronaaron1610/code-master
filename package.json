@@ -1,17 +1,16 @@
-
 {
   "name": "code-master",
   "displayName": "Code Master",
   "description": "An AI Chat and Autonomous Code Generation Agent for VS Code.",
   "version": "1.0.0",
-  "publisher": "antigravity",
+  "publisher": "aaronaaron1610",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/antigravity/code-master"
+    "url": "https://github.com/aaronaaron1610/code-master"
   },
   "bugs": {
-    "url": "https://github.com/antigravity/code-master/issues"
+    "url": "https://github.com/aaronaaron1610/code-master/issues"
   },
   "icon": "src/webview/assets/logo.png",
   "engines": {

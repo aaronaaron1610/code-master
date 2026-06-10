@@ -77,9 +77,9 @@ class CodeMasterChatViewProvider implements vscode.WebviewViewProvider {
     watcher.onDidChange(changeListener);
     watcher.onDidCreate(changeListener);
 
-    // Watch architecture file
+    // Watch architecture file (located in .cm_reports directory)
     const archWatcher = vscode.workspace.createFileSystemWatcher(
-      '**/{ARCHITECTURE,architecture}.md'
+      '**/.cm_reports/{ARCHITECTURE,architecture}.md'
     );
     
     const checkArchFile = () => {
@@ -181,8 +181,9 @@ class CodeMasterChatViewProvider implements vscode.WebviewViewProvider {
     const folders = vscode.workspace.workspaceFolders;
     const workspacePath = folders && folders.length > 0 ? folders[0].uri.fsPath : '';
     if (!workspacePath) return false;
-    return fs.existsSync(path.join(workspacePath, 'ARCHITECTURE.md')) ||
-           fs.existsSync(path.join(workspacePath, 'architecture.md'));
+    const reportsDir = path.join(workspacePath, '.cm_reports');
+    return fs.existsSync(path.join(reportsDir, 'ARCHITECTURE.md')) ||
+           fs.existsSync(path.join(reportsDir, 'architecture.md'));
   }
 
   private async sendInitialState() {

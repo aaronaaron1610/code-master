@@ -45,7 +45,18 @@ export function constructPromptWithFiles(text: string, fileAttachments: { name: 
   }
   formattedText += "--- Attached Files ---";
   for (const file of fileAttachments) {
-    formattedText += `\n\nFile: ${file.name}\n\`\`\`\n${file.content}\n\`\`\``;
+    // Skip base64 data URLs in textual injection. Image attachments are sent
+    // as image_url parts; binary attachments (PDF/Excel) are parsed in the
+    // extension host and replaced with their extracted text before this
+    // function is called. Any remaining data: URL here is not useful to the
+    // model and would be echoed back into the UI as a giant base64 blob.
+    let injectedContent = file.content;
+    if (typeof injectedContent === 'string' && injectedContent.startsWith('data:')) {
+      const headerEnd = injectedContent.indexOf(',');
+      const meta = headerEnd > 0 ? injectedContent.substring(0, headerEnd) : 'data:';
+      injectedContent = `[Binary or data-URL content omitted from textual prompt (${meta}).]`;
+    }
+    formattedText += `\n\nFile: ${file.name}\n\`\`\`\n${injectedContent}\n\`\`\``;
   }
   formattedText += "\n--------------------";
   return formattedText;

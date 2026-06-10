@@ -1,186 +1,261 @@
 
-# Architecture: Code Master (VS Code Extension)
+# Architecture Overview
 
-## 1. Overview
+## Project Summary
 
-**Code Master** is a VS Code extension that provides an AI chat interface and an *autonomous coding agent* inside a VS Code Webview panel. It communicates with large language models via **OpenRouter** using **streaming Server-Sent Events (SSE)** over HTTPS.  
+**Code Master** is a VS Code extension that provides:
 
-The architecture is split into two major parts:
+- A sidebar-based AI assistant UI
+- Two interaction modes:
+  - **Chat mode** for direct conversational responses
+  - **Agent mode** for autonomous, tool-driven code analysis and modification
+- A React-based webview frontend embedded in VS Code
+- An extension-host backend that manages:
+  - model communication through OpenRouter
+  - autonomous tool execution
+  - file and command approval workflows
+  - attachment parsing
+  - workspace-aware operations
 
-1. **Extension Host (Node.js / TypeScript)**  
-   - Owns the VS Code UI container (WebviewViewProvider).
-   - Implements the **Agent** (tool parsing, tool execution, approval gating).
-   - Implements the **LLM streaming client** (OpenRouter SSE parsing).
-   - Handles workspace file operations securely (path resolution / workspace boundary checks).
-   - Sends state and events to the Webview via `postMessage`.
+At a high level, the project is a **desktop extension application** composed of two main runtime layers:
 
-2. **Webview UI (React + Vite + Tailwind CSS)**  
-   - Renders the chat/agent UI.
-   - Collects user input, attachments, and UI selections (model, mode, reasoning effort).
-   - Displays streaming tokens, tool steps, and approval actions.
-   - Sends user decisions back to the extension host via `postMessage`.
+1. **VS Code Extension Host backend**  
+   Runs in Node.js inside VS Code and has access to the workspace, filesystem, commands, and webview APIs.
 
----
-
-## 2. Repository / File Structure
-
-Top-level (workspace root):
-
-- `package.json` – extension metadata, dependencies, build scripts
-- `tsconfig.json` – TypeScript config
-- `src/extension.ts` – extension host entry + WebviewViewProvider + message routing
-- `src/services/llm.ts` – OpenRouter streaming + prompt/content utilities
-- `src/services/agent.ts` – autonomous agent loop + tool execution implementations
-- `src/webview/` – React/Vite webview app
-- `.env` (expected in user’s workspace root) – `OPENROUTER_API_KEY`
-
-Notable build output directories (generated):
-
-- `dist/extension.js` – bundled extension host via **esbuild**
-- `dist/webview/assets/*` – webview build output via **Vite**
+2. **Webview frontend**  
+   A React + Vite application rendered inside the sidebar view, used for chat interaction, controls, and tool approval UX.
 
 ---
 
-## 3. Build & Tooling Technologies
+## Top-Level Structure
 
-### Extension Host
-- **Language**: TypeScript
-- **Bundler**: `esbuild`
-- **Runtime**: VS Code extension host (Node.js)
-- **LLM HTTP**: native `https` module
-- **Streaming format**: SSE from OpenRouter
-
-Key scripts in root `package.json`:
-- `compile:extension`: bundles `src/extension.ts` → `dist/extension.js`
-- `compile:webview`: builds webview from `src/webview` via Vite
-- `watch`: concurrently watches extension + webview
-
-### Webview UI
-- **Language**: TypeScript + React (TSX)
-- **Bundler**: Vite
-- **Styling**: Tailwind CSS (with `tailwind.config.js`)
-- **Markdown rendering**: `react-markdown`
-- **Icons**: `lucide-react`
-
----
-
-## 4. VS Code Contribution & Webview Surface
-
-### View Registration
-In `package.json`, the extension contributes:
-- Activity bar view container: `code-master-sidebar`
-- Webview view: `code-master.chatView`
-
-### Webview Initialization & Permissions
-In `src/extension.ts`:
-- `resolveWebviewView()` sets:
-  - `enableScripts: true`
-  - `localResourceRoots: [extensionUri]`
-- HTML loads:
-  - `dist/webview/assets/index.js`
-  - `dist/webview/assets/index.css`
-
-### Hot Reload Watching (dev convenience)
-The extension sets up file watchers:
-- `dist/webview/assets/*` – reloads webview HTML if changed
-- `**/{ARCHITECTURE,architecture}.md` – informs UI whether architecture file exists
+```text
+.
+├── package.json                  # VS Code extension manifest, scripts, dependencies
+├── tsconfig.json                 # TypeScript config for extension-side code
+├── src/
+│   ├── extension.ts              # Extension activation, webview provider, orchestration
+│   ├── services/
+│   │   ├── agent.ts              # Autonomous agent loop, tool parsing/execution, approvals
+│   │   └── llm.ts                # OpenRouter streaming client and message utilities
+│   └── webview/
+│       ├── package.json          # Webview app package definition
+│       ├── vite.config.ts        # Vite build configuration
+│       ├── postcss.config.js     # PostCSS config
+│       ├── tailwind.config.js    # Tailwind config
+│       ├── index.html            # Webview entry HTML
+│       ├── assets/
+│       │   └── logo.png          # Shared branding asset
+│       └── src/
+│           ├── main.tsx          # React bootstrap
+│           ├── App.tsx           # Main UI and interaction logic
+│           └── index.css         # Tailwind / global styling
+├── .vscode/
+│   ├── launch.json               # Debug config
+│   └── tasks.json                # Task config
+└── .cm_reports/
+    └── changes.md                # Generated change summary artifact
+```
 
 ---
 
-## 5. Extension ↔ Webview Communication Contract
+## Core Technologies
 
-### Message Transport
-The extension host posts messages to the webview using:
-- `webview.postMessage(msg)`
+### Backend / Extension Host
+- **TypeScript**
+- **VS Code Extension API**
+- **Node.js built-ins**
+  - `fs`
+  - `path`
+  - `https`
+  - `child_process`
+- **esbuild** for bundling the extension entrypoint
+- **OpenRouter API** for model access
+- **pdf-parse** for PDF text extraction
+- **xlsx** for spreadsheet parsing
 
-The webview notifies the extension host using:
-- `acquireVsCodeApi().postMessage(...)`
+### Frontend / Webview
+- **React 18**
+- **TypeScript**
+- **Vite**
+- **Tailwind CSS**
+- **PostCSS + Autoprefixer**
+- **react-markdown** for rendering assistant responses
+- **lucide-react** for UI icons
 
-### Message Types (Extension → Webview)
-- `state`: full UI state snapshot:
-  - `messages`, `provider`, `model`, `mode`, `thinkingEffort`
-  - `workspacePath`
-  - partial key display: `keys.openrouterKey` masked
-  - `models` list
-  - `architectureExists`
-  - optional `usage`
-- `activeState`: `{ active: boolean }` for streaming on/off
-- `workspace`: `{ path, architectureExists }` on workspace changes
-- `architectureState`: `{ exists: boolean }`
-
-### Message Types (Webview → Extension)
-- `ready` – triggers `sendInitialState()`
-- `saveKeys` – currently routes through `sendInitialState()`
-- `updateModel` – updates selected LLM model
-- `updateThinkingEffort` – reasoning effort changes (when supported)
-- `updateMode` – toggles `chat` vs `agent`
-- `sendMessage` – start message handling:
-  - `text`
-  - `attachments[]` (images as data URLs; files as raw text/binary data URLs)
-  - `options`: `{ mode, provider, model, thinkingEffort? }`
-- `toolDecision` – approval/rejection for a pending tool:
-  - `{ toolId, approve }`
-- `viewDiff` – open VS Code diff view for proposed file edits
-- `stopGeneration` – abort current generation / stop agent
-- `resetChat` – resets conversation and agent state
+### Packaging / Development
+- **VSIX-compatible VS Code extension structure**
+- **concurrently** for parallel watch processes
+- **npm** for dependency and build orchestration
 
 ---
 
-## 6. LLM Streaming (OpenRouter via SSE)
+## Architectural Style
 
-Implemented in `src/services/llm.ts`.
+The application follows a **split frontend/backend extension architecture**:
 
-### Request Construction
-- Endpoint: `https://openrouter.ai/api/v1/chat/completions`
-- Payload:
-  - `model`
-  - `messages` (system prompt optionally prepended)
-  - `stream: true`
-  - `stream_options.include_usage: true`
+- The **webview** is the presentation layer
+- The **extension host** is the application/service layer
+- The **agent** is a domain-specific orchestration engine for autonomous work
+- The **LLM service** is an infrastructure adapter for streaming model communication
 
-### Reasoning Effort
-If the selected model “supports reasoning” (heuristic based on model id containing keywords like `r1`, `o1`, `thinking`, `reasoning`) and `thinkingEffort` is provided:
-- `bodyData.reasoning = { effort: thinkingEffort.toLowerCase() }`
+This creates a layered structure:
 
-### Streaming Parser
-- Uses native Node `https.request` with streaming `data` events.
-- SSE data is parsed via a small `SseParser`:
-  - buffers by newline
-  - processes lines that look like `data: ...`
-- Stops when it receives `data: [DONE]`.
+```text
+Webview UI (React)
+    ⇅ postMessage
+Extension Host Controller (extension.ts)
+    ⇅ direct service calls
+Agent Runtime (agent.ts)
+    ⇅
+LLM Adapter (llm.ts)
+    ⇅
+OpenRouter API
+```
 
-### Token vs Thought Extraction
-From each SSE chunk, the extension tries:
-- `delta.reasoning` or `delta.thought` → thought content (if present)
-- `delta.content` → standard assistant tokens
-
-### Usage Metrics
-When OpenRouter includes usage:
-- `prompt_tokens` → input
-- `completion_tokens` → output
-- `prompt_tokens_details.cached_tokens` → cacheRead
-- cacheWrite currently treated as `0`
+Additionally, the extension host directly integrates with:
+- the local filesystem
+- workspace metadata
+- VS Code UI commands
+- diff views
+- markdown previews
+- terminal command execution
 
 ---
 
-## 7. Agent Architecture (Autonomous Tool-Using Loop)
+## Main Runtime Components
 
-Implemented in `src/services/agent.ts`.
+## 1. Extension Entry and Controller Layer
 
-### Agent Inputs
-`Agent.run(...)` receives:
-- `userContent`: either a string or LLM content parts
-- `attachments`: list of typed attachments
-- `options`: `{ provider, model, apiKey, thinkingEffort? }`
-- `onStateUpdate`: callback to continuously update UI
+**Primary file:** `src/extension.ts`
 
-### Prompt + Attachment Injection
-The agent injects attachments into the prompt by converting them into a formatted “Attached Files” block (using `constructPromptWithFiles`).
+This file is the central application controller for the extension host.
 
-### System Prompt
-`getSystemPrompt()` instructs the model about:
-- the custom XML tool tags:
-  - `<list_files />`
-  - `<read_file />`
-  - `<search_code />`
-  - `<write_file>...
+### Responsibilities
+- Activates the extension
+- Registers the sidebar webview provider
+- Registers the reset command
+- Tracks workspace changes
+- Hosts webview/backend messaging
+- Maintains non-agent chat history
+- Chooses between direct chat mode and agent mode
+- Loads API keys from `.env`
+- Fetches available models from OpenRouter
+- Parses non-image attachments before sending to models
+- Opens VS Code diff views for file proposals
+
+### Important constructs
+
+#### `activate(context)`
+Creates:
+- an `Agent` instance
+- a `CodeMasterChatViewProvider` instance
+
+Registers:
+- `code-master.chatView` webview view provider
+- `code-master.resetChat` command
+- workspace-folder change listener
+
+#### `CodeMasterChatViewProvider`
+This is the main controller class connecting the UI to backend services.
+
+It owns:
+- current view reference
+- chat message state for direct chat mode
+- selected provider/model/mode
+- reasoning effort
+- active abort controller
+- cached model list
+
+### Key behaviors
+- Sends initial state when the webview reports it is ready
+- Receives UI messages like:
+  - `sendMessage`
+  - `updateModel`
+  - `updateMode`
+  - `toolDecision`
+  - `viewDiff`
+  - `stopGeneration`
+  - `resetChat`
+- Routes requests to:
+  - direct streaming chat
+  - autonomous agent execution
+
+### Architectural note
+`extension.ts` acts as a **controller/facade**, while `agent.ts` and `llm.ts` contain the main execution and integration logic.
+
+---
+
+## 2. Agent Runtime
+
+**Primary file:** `src/services/agent.ts`
+
+This is the most important domain-specific component in the project. It implements an autonomous coding agent that can inspect the workspace, reason iteratively, invoke tools, and wait for human approval for sensitive actions.
+
+### Responsibilities
+- Maintain agent conversation history
+- Build an agent-specific system prompt
+- Stream assistant responses from the LLM
+- Parse embedded XML-like tool calls from model output
+- Execute tools sequentially
+- Pause for user approvals where needed
+- Push tool results back into the conversation as system messages
+- Detect repeated tool loops
+- Support cancellation
+- Render agent-friendly UI messages
+
+### Agent execution model
+
+The agent uses a **loop-based orchestration design**:
+
+1. Add user message to internal history
+2. Call the LLM with:
+   - conversation history
+   - system prompt
+   - optional architecture context
+   - optional active editor context
+3. Stream response tokens
+4. Parse any tool tags in the assistant response
+5. If no tools were called:
+   - finish and return final answer
+6. If tools were called:
+   - execute them in order
+   - append each tool result as a `system` message
+   - continue the loop so the model can react to the results
+
+This is a standard **ReAct-style agent loop**, but implemented through custom XML tags rather than JSON function calling.
+
+### Internal state
+The `Agent` stores:
+- `messages`
+- `workspaceRoot`
+- pending approval resolver
+- current pending tool
+- tool sequence counter
+- abort controller
+- cumulative token usage
+
+### Human-in-the-loop controls
+The agent intentionally requires explicit approval for:
+- `write_file`
+- `edit_file`
+- unsafe `run_command`
+
+For write/edit operations it also:
+- creates temp files
+- opens a diff comparison
+- generates a markdown plan preview
+- writes a post-approval change summary
+
+This reflects a **safety-first agent architecture**.
+
+---
+
+## 3. Tooling Model
+
+The agent supports a custom XML command protocol:
+
+- `<list_files />`
+- `<read_file />`
+- `<search_code />`
+- `<write_file>...
