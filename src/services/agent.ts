@@ -129,7 +129,7 @@ export class Agent {
                     {
                       id: streamingMessageId,
                       role: 'assistant',
-                      content: responseText,
+                      content: this.stripXmlTags(responseText),
                       thought: thoughtText,
                       isStreaming: true,
                       tools: this.parseActiveTools(responseText)
@@ -152,7 +152,7 @@ export class Agent {
                     {
                       id: streamingMessageId,
                       role: 'assistant',
-                      content: responseText,
+                      content: this.stripXmlTags(responseText),
                       thought: thoughtText,
                       isStreaming: true,
                       tools: this.parseActiveTools(responseText)
@@ -175,7 +175,7 @@ export class Agent {
                     {
                       id: streamingMessageId,
                       role: 'assistant',
-                      content: responseText,
+                      content: this.stripXmlTags(responseText),
                       thought: thoughtText,
                       isStreaming: true,
                       tools: this.parseActiveTools(responseText)
@@ -902,22 +902,10 @@ export class Agent {
           }
         }
 
-        // Clean out the XML tags from user message content in UI display
-        let displayContent = contentStr
-          .replace(/<list_files(?:\s+glob=["']([^"']+)["'])?\s*\/>/g, '')
-          .replace(/<read_file\s+([^>]+?)\s*\/>/g, '')
-          .replace(/<search_code\s+query=["']([^"']+)["']\s*\/>/g, '')
-          .replace(/<write_file\s+path=["']([^"']+)["']>([\s\S]*?)<\/write_file>/g, '')
-          .replace(/<write_file\s+path=["']([^"']+)["']>([\s\S]*)/g, '')
-          .replace(/<edit_file\s+path=["']([^"']+)["']>([\s\S]*?)<\/edit_file>/g, '')
-          .replace(/<edit_file\s+path=["']([^"']+)["']>([\s\S]*)/g, '')
-          .replace(/<run_command\s+cmd=["']([^"']+)["']\s*\/>/g, '')
-          .trim();
-
         uiMessages.push({
           id: `msg_${idx}`,
           role: 'assistant',
-          content: displayContent,
+          content: this.stripXmlTags(contentStr),
           tools: tools.length > 0 ? tools : undefined
         });
       } else {
@@ -936,6 +924,19 @@ export class Agent {
   /**
    * Incremental XML tag scanner that extracts tool commands.
    */
+  private stripXmlTags(contentStr: string): string {
+    return contentStr
+      .replace(/<list_files(?:\s+glob=["']([^"']+)["'])?\s*\/>/g, '')
+      .replace(/<read_file\s+([^>]+?)\s*\/>/g, '')
+      .replace(/<search_code\s+query=["']([^"']+)["']\s*\/>/g, '')
+      .replace(/<write_file\s+path=["']([^"']+)["']>([\s\S]*?)<\/write_file>/g, '')
+      .replace(/<write_file\s+path=["']([^"']+)["']>([\s\S]*)/g, '')
+      .replace(/<edit_file\s+path=["']([^"']+)["']>([\s\S]*?)<\/edit_file>/g, '')
+      .replace(/<edit_file\s+path=["']([^"']+)["']>([\s\S]*)/g, '')
+      .replace(/<run_command\s+cmd=["']([^"']+)["']\s*\/>/g, '')
+      .trim();
+  }
+
   private parseAttributes(attrString: string): Record<string, string> {
     const attrs: Record<string, string> = {};
     const attrRegex = /(\w+)=["']([^"']+)["']/g;
