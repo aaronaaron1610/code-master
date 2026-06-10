@@ -908,7 +908,7 @@ export class Agent {
           content: this.stripXmlTags(contentStr),
           tools: tools.length > 0 ? tools : undefined
         });
-      } else {
+      } else if (msg.role === 'user') {
         uiMessages.push({
           id: `msg_${idx}`,
           role: msg.role,
