@@ -534,7 +534,22 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const container = document.querySelector('main.flex-1.overflow-y-auto');
+    if (!container) {
+      chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      return;
+    }
+
+    const el = container as HTMLElement;
+    const distanceFromBottom = el.scrollHeight - (el.scrollTop + el.clientHeight);
+
+    // Only auto-scroll if user is already at/near the bottom.
+    // If they scrolled up to read something, we won't yank them down.
+    const isNearBottom = distanceFromBottom < 120; // px threshold
+
+    if (isNearBottom) {
+      chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
   }, [messages, isLlmActive]);
 
   // Handle dynamic auto-growing and auto-shrinking height of textarea
