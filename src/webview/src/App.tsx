@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   Send, Sparkles, RefreshCw, ChevronDown, Check, X,
   Terminal, FileText, Search, FileCode, CheckCircle, AlertTriangle,
-  Paperclip, Bot, MessageSquare, Compass
+  Paperclip, Bot, MessageSquare, Compass, ArrowDown, ArrowUp, Database, Gauge
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import logo from './assets/logo.png';
@@ -1186,13 +1186,20 @@ export default function App() {
             contextPct >= 70 ? 'text-amber-400' :
             'text-emerald-400';
           return (
-            <div className="flex items-center justify-between px-2 py-1 bg-vscode-inputBg/15 border border-vscode-inputBorder/15 rounded text-[8.5px] text-vscode-fg/40 font-mono select-none animate-fade-in">
-              <div className="flex items-center space-x-2">
-                <span>Prompt: {usage.input} tokens</span>
+            <div className="flex items-center justify-between px-2 py-1 bg-vscode-inputBg/15 border border-vscode-inputBorder/15 rounded text-vscode-fg/40 font-mono select-none animate-fade-in">
+              <div className="flex items-center space-x-2.5">
+                <div className="flex items-center space-x-1" title={`Prompt tokens: ${usage.input}`}>
+                  <ArrowDown className="h-3 w-3 text-cyan-400" />
+                  <span className="text-[9px]">{usage.input}</span>
+                </div>
+                <div className="flex items-center space-x-1" title={`Completion tokens: ${usage.output}`}>
+                  <ArrowUp className="h-3 w-3 text-purple-400" />
+                  <span className="text-[9px]">{usage.output}</span>
+                </div>
                 {contextLimit > 0 && (
-                  <span className={`flex items-center space-x-1 ${ctxColor} font-semibold`} title={`Context window usage`}>
-                    <span>Context:</span>
-                    <span>{contextPct.toFixed(1)}%</span>
+                  <div className={`flex items-center space-x-1 ${ctxColor} font-semibold`} title={`Context window usage: ${contextPct.toFixed(1)}%`}>
+                    <Gauge className="h-3 w-3" />
+                    <span className="text-[9px]">{contextPct.toFixed(0)}%</span>
                     <div className="relative w-12 h-1 bg-vscode-bg/60 rounded-full overflow-hidden border border-vscode-inputBorder/30">
                       <div
                         className={`h-full transition-all duration-300 ${
@@ -1203,12 +1210,14 @@ export default function App() {
                         style={{ width: `${contextPct}%` }}
                       />
                     </div>
-                  </span>
+                  </div>
                 )}
-                <span>Completion: {usage.output} tokens</span>
               </div>
               {usage.cacheRead > 0 && (
-                <span className="text-emerald-400 font-semibold">Cached: {usage.cacheRead}</span>
+                <div className="flex items-center space-x-1 text-emerald-400 font-semibold" title={`Cached tokens: ${usage.cacheRead}`}>
+                  <Database className="h-3 w-3" />
+                  <span className="text-[9px]">{usage.cacheRead}</span>
+                </div>
               )}
             </div>
           );
