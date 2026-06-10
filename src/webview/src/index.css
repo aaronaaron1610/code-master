@@ -9,10 +9,30 @@ body {
   height: 100%;
   width: 100%;
   font-family: var(--vscode-font-family, system-ui, -apple-system, sans-serif);
-  font-size: var(--vscode-font-size, 13px);
+  /* Bigger default UI font */
+  font-size: var(--vscode-font-size, 16px);
   font-weight: var(--vscode-font-weight, 400);
   background-color: var(--vscode-sideBar-background, #1e1e1e);
   color: var(--vscode-sideBar-foreground, #cccccc);
+}
+
+/* Common chat text sizing (covers input + responses depending on component markup) */
+input,
+textarea,
+select,
+button {
+  font-size: 16px;
+}
+
+.chat,
+.chat-container,
+.response,
+.answer,
+.message,
+.markdown,
+.prose {
+  font-size: 16px;
+  line-height: 1.5;
 }
 
 /* Custom scrollbars that match VS Code workbench */
