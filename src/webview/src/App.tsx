@@ -87,6 +87,7 @@ interface Message {
   thought?: string;
   tools?: ToolCall[];
   attachments?: Attachment[];
+  agentName?: string;
 }
 
 interface ToolCall {
@@ -421,6 +422,27 @@ const ToolStep = ({
           )}
         </div>
       )}
+    </div>
+  );
+};
+
+const getAgentBadge = (agentName?: string) => {
+  if (!agentName) return null;
+  
+  let colors = "text-cyan-400 bg-cyan-500/10 border-cyan-500/20";
+  if (agentName.toLowerCase().includes('reader')) {
+    colors = "text-blue-400 bg-blue-500/10 border-blue-500/20";
+  } else if (agentName.toLowerCase().includes('writer') || agentName.toLowerCase().includes('change')) {
+    colors = "text-emerald-400 bg-emerald-500/10 border-emerald-500/20";
+  } else if (agentName.toLowerCase().includes('executor') || agentName.toLowerCase().includes('command')) {
+    colors = "text-purple-400 bg-purple-500/10 border-purple-500/20";
+  } else if (agentName.toLowerCase().includes('markdown') || agentName.toLowerCase().includes('document')) {
+    colors = "text-amber-400 bg-amber-500/10 border-amber-500/20";
+  }
+
+  return (
+    <div className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-mono font-bold tracking-wider uppercase border select-none ${colors}`}>
+      {agentName}
     </div>
   );
 };
@@ -879,6 +901,11 @@ export default function App() {
                         <Sparkles className="w-3 h-3" />
                       </div>
                       <div className="flex-1 bg-vscode-inputBg/15 border border-vscode-inputBorder/35 rounded-xl rounded-tl-sm px-3 py-2 space-y-2.5 shadow-sm overflow-hidden">
+                        {msg.agentName && (
+                          <div className="flex items-center space-x-1 pb-1">
+                            {getAgentBadge(msg.agentName)}
+                          </div>
+                        )}
 
                         {/* Collapsible reasoning history */}
                         {msg.thought && <ThinkingProcess thought={msg.thought} />}
@@ -1188,40 +1215,38 @@ export default function App() {
             contextPct >= 90 ? 'text-red-400' :
             contextPct >= 70 ? 'text-amber-400' :
             'text-emerald-400';
+
+          const promptPrice = parseFloat(activeModel?.pricing?.prompt || '0');
+          const completionPrice = parseFloat(activeModel?.pricing?.completion || '0');
+          const cachedInputPrice = getCachedInputPrice(activeModel);
+          const inputCost = (usage.input || 0) * promptPrice;
+          const outputCost = (usage.output || 0) * completionPrice;
+          const cacheCost = (usage.cacheRead || 0) * cachedInputPrice;
+          const totalCost = inputCost + outputCost + cacheCost;
+
           return (
-            <div className="flex items-center justify-between px-2 py-1 bg-vscode-inputBg/15 border border-vscode-inputBorder/15 rounded text-vscode-fg/40 font-mono select-none animate-fade-in">
-              <div className="flex items-center space-x-2.5">
-                <div className="flex items-center space-x-1" title={`Prompt tokens: ${usage.input}`}>
-                  <ArrowDown className="h-3 w-3 text-cyan-400" />
-                  <span className="text-[9px]">{usage.input}</span>
+            <div className="flex flex-col gap-1 px-2 py-1 bg-vscode-inputBg/15 border border-vscode-inputBorder/15 rounded text-vscode-fg/40 font-mono select-none animate-fade-in">
+              <div className="flex items-center justify-between gap-3">
+                <div className={`flex items-center space-x-1 ${ctxColor} font-semibold`} title={`Context window usage: ${contextPct.toFixed(1)}%`}>
+                  <Gauge className="h-3 w-3" />
+                  <span className="text-[9px]">{contextPct.toFixed(0)}%</span>
                 </div>
-                <div className="flex items-center space-x-1" title={`Completion tokens: ${usage.output}`}>
-                  <ArrowUp className="h-3 w-3 text-purple-400" />
-                  <span className="text-[9px]">{usage.output}</span>
-                </div>
-                {contextLimit > 0 && (
-                  <div className={`flex items-center space-x-1 ${ctxColor} font-semibold`} title={`Context window usage: ${contextPct.toFixed(1)}%`}>
-                    <Gauge className="h-3 w-3" />
-                    <span className="text-[9px]">{contextPct.toFixed(0)}%</span>
-                    <div className="relative w-12 h-1 bg-vscode-bg/60 rounded-full overflow-hidden border border-vscode-inputBorder/30">
-                      <div
-                        className={`h-full transition-all duration-300 ${
-                          contextPct >= 90 ? 'bg-red-500' :
-                          contextPct >= 70 ? 'bg-amber-500' :
-                          'bg-emerald-500'
-                        }`}
-                        style={{ width: `${contextPct}%` }}
-                      />
-                    </div>
+
+                {usage.cacheRead > 0 && (
+                  <div className="flex items-center space-x-1 text-emerald-400 font-semibold" title={`Cached tokens: ${usage.cacheRead}`}>
+                    <Database className="h-3 w-3" />
+                    <span className="text-[9px]">{usage.cacheRead}</span>
+                    <span className="text-[9px] text-vscode-fg/35">cache</span>
                   </div>
                 )}
               </div>
-              {usage.cacheRead > 0 && (
-                <div className="flex items-center space-x-1 text-emerald-400 font-semibold" title={`Cached tokens: ${usage.cacheRead}`}>
-                  <Database className="h-3 w-3" />
-                  <span className="text-[9px]">{usage.cacheRead}</span>
-                </div>
-              )}
+
+              <div className="flex items-center justify-between gap-3 text-[9px]">
+                <span className="text-vscode-fg/35">Total cost</span>
+                <span className="text-emerald-300 font-semibold" title={`Prompt: ${inputCost.toFixed(6)} · Completion: ${outputCost.toFixed(6)} · Cache: ${cacheCost.toFixed(6)}`}>
+                  ${totalCost.toFixed(6)}
+                </span>
+              </div>
             </div>
           );
         })()}
