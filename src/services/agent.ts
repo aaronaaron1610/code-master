@@ -321,9 +321,27 @@ export class Agent {
       
       if (tool.name === 'read_file') {
         const filePath = tool.arguments.path;
-        const content = await this.toolReadFile(filePath);
+        const lineStart = tool.arguments.line_start ? parseInt(tool.arguments.line_start, 10) : undefined;
+        const lineEnd = tool.arguments.line_end ? parseInt(tool.arguments.line_end, 10) : undefined;
+        
+        // Resolve lines to populate arguments correctly for the UI
+        const absolutePath = this.resolvePath(filePath);
+        let totalLines = 0;
+        if (fs.existsSync(absolutePath)) {
+          const fileContent = fs.readFileSync(absolutePath, 'utf8');
+          totalLines = fileContent.split(/\r?\n/).length;
+        }
+        
+        const resolvedStart = lineStart !== undefined ? Math.max(1, lineStart) : 1;
+        const resolvedEnd = lineEnd !== undefined ? Math.min(totalLines, lineEnd) : (totalLines || 1);
+
+        const content = await this.toolReadFile(filePath, resolvedStart, resolvedEnd);
         tool.status = 'completed';
-        tool.result = `Content of ${filePath}:\n${content}`;
+        
+        tool.arguments.line_start = resolvedStart.toString();
+        tool.arguments.line_end = resolvedEnd.toString();
+        
+        tool.result = `Content of ${filePath} (Lines ${resolvedStart} to ${resolvedEnd}):\n${content}`;
         return tool.result;
       }
       
@@ -371,7 +389,11 @@ export class Agent {
         }
 
         // Create plan in markdown file and open it
-        const planPath = path.join(this.workspaceRoot, 'coding_plan.md');
+        const reportsDir = path.join(this.workspaceRoot, '.cm_reports');
+        if (!fs.existsSync(reportsDir)) {
+          fs.mkdirSync(reportsDir, { recursive: true });
+        }
+        const planPath = path.join(reportsDir, 'coding_plan.md');
         try {
           const planContent = this.createPlanMarkdown(filePath, 'write', { content: fileContent });
           fs.writeFileSync(planPath, planContent, 'utf8');
@@ -416,6 +438,13 @@ export class Agent {
           
           tool.status = 'completed';
           tool.result = `Successfully wrote content to file: ${filePath}`;
+
+          // Write changes summary
+          this.writeChangesSummary(filePath, 'write', {
+            content: fileContent,
+            line_start: tool.arguments.line_start,
+            line_end: tool.arguments.line_end
+          });
         } else {
           tool.status = 'rejected';
           tool.result = `User REJECTED modifying/creating file: ${filePath}`;
@@ -438,6 +467,26 @@ export class Agent {
         const searchContent = tool.arguments.search;
         const replaceContent = tool.arguments.replace;
 
+        // Calculate line range of the edit
+        const absolutePath = this.resolvePath(filePath);
+        if (fs.existsSync(absolutePath)) {
+          const content = fs.readFileSync(absolutePath, 'utf8');
+          const normalize = (str: string) => str.replace(/\r\n/g, '\n');
+          const normalizedContent = normalize(content);
+          const normalizedSearch = normalize(searchContent);
+          
+          const index = normalizedContent.indexOf(normalizedSearch);
+          if (index !== -1) {
+            const textBefore = normalizedContent.substring(0, index);
+            const startLine = textBefore.split('\n').length;
+            const searchLinesCount = normalizedSearch.split('\n').length;
+            const endLine = startLine + searchLinesCount - 1;
+            
+            tool.arguments.line_start = startLine.toString();
+            tool.arguments.line_end = endLine.toString();
+          }
+        }
+
         const modifiedContent = await this.toolEditFile(filePath, searchContent, replaceContent);
 
         tool.status = 'pending';
@@ -456,7 +505,11 @@ export class Agent {
         tool.arguments.originalPath = absoluteDest;
 
         // Create plan in markdown file and open it
-        const planPath = path.join(this.workspaceRoot, 'coding_plan.md');
+        const reportsDir = path.join(this.workspaceRoot, '.cm_reports');
+        if (!fs.existsSync(reportsDir)) {
+          fs.mkdirSync(reportsDir, { recursive: true });
+        }
+        const planPath = path.join(reportsDir, 'coding_plan.md');
         try {
           const planContent = this.createPlanMarkdown(filePath, 'edit', { search: searchContent, replace: replaceContent });
           fs.writeFileSync(planPath, planContent, 'utf8');
@@ -495,6 +548,14 @@ export class Agent {
           
           tool.status = 'completed';
           tool.result = `Successfully edited file: ${filePath}`;
+
+          // Write changes summary
+          this.writeChangesSummary(filePath, 'edit', {
+            search: searchContent,
+            replace: replaceContent,
+            line_start: tool.arguments.line_start,
+            line_end: tool.arguments.line_end
+          });
         } else {
           tool.status = 'rejected';
           tool.result = `User REJECTED modifying file: ${filePath}`;
@@ -583,12 +644,28 @@ export class Agent {
     return files.map(file => vscode.workspace.asRelativePath(file));
   }
 
-  private async toolReadFile(relativePath: string): Promise<string> {
+  private async toolReadFile(relativePath: string, lineStart?: number, lineEnd?: number): Promise<string> {
     const absolutePath = this.resolvePath(relativePath);
     if (!fs.existsSync(absolutePath)) {
       throw new Error(`File not found: ${relativePath}`);
     }
-    return fs.readFileSync(absolutePath, 'utf8');
+    const fullContent = fs.readFileSync(absolutePath, 'utf8');
+    if (lineStart === undefined && lineEnd === undefined) {
+      return fullContent;
+    }
+
+    const lines = fullContent.split(/\r?\n/);
+    const totalLines = lines.length;
+
+    const start = lineStart !== undefined ? Math.max(1, lineStart) : 1;
+    const end = lineEnd !== undefined ? Math.min(totalLines, lineEnd) : totalLines;
+
+    if (start > totalLines || start > end) {
+      return `[Note: Requested line range ${start}-${end} is empty or out of bounds. Total lines in file: ${totalLines}]`;
+    }
+
+    const slicedLines = lines.slice(start - 1, end);
+    return slicedLines.join('\n');
   }
 
   private async toolSearchCode(query: string): Promise<{ file: string; line: number; text: string }[]> {
@@ -745,6 +822,60 @@ export class Agent {
     return md;
   }
 
+  private writeChangesSummary(
+    filePath: string,
+    action: 'write' | 'edit',
+    details: { content?: string; search?: string; replace?: string; line_start?: string; line_end?: string }
+  ) {
+    try {
+      const reportsDir = path.join(this.workspaceRoot, '.cm_reports');
+      if (!fs.existsSync(reportsDir)) {
+        fs.mkdirSync(reportsDir, { recursive: true });
+      }
+      const changesPath = path.join(reportsDir, 'changes.md');
+      
+      const ext = path.extname(filePath).slice(1);
+      const lang = ext || 'text';
+      const timestamp = new Date().toLocaleString();
+      
+      let md = `# Summary of Applied Changes\n\n`;
+      md += `**Timestamp**: ${timestamp}\n`;
+      md += `**Action**: ${action === 'write' ? 'Write/Overwrite File' : 'Edit File'}\n`;
+      md += `**File**: \`${filePath}\`\n`;
+      if (details.line_start && details.line_end) {
+        md += `**Lines**: ${details.line_start} to ${details.line_end}\n`;
+      }
+      md += `\n`;
+      
+      if (action === 'write') {
+        md += `## Content Written\n`;
+        const lines = (details.content || '').split('\n');
+        if (lines.length > 100) {
+          md += `\`\`\`${lang}\n${lines.slice(0, 100).join('\n')}\n... [truncated ${lines.length - 100} lines]\n\`\`\`\n`;
+        } else {
+          md += `\`\`\`${lang}\n${details.content || ''}\n\`\`\`\n`;
+        }
+      } else {
+        md += `## Changes Applied\n\n`;
+        md += `### Removed (Search Block):\n`;
+        md += `\`\`\`${lang}\n${details.search || ''}\n\`\`\`\n\n`;
+        md += `### Added (Replace Block):\n`;
+        md += `\`\`\`${lang}\n${details.replace || ''}\n\`\`\`\n`;
+      }
+      
+      fs.writeFileSync(changesPath, md, 'utf8');
+      
+      const changesUri = vscode.Uri.file(changesPath);
+      vscode.commands.executeCommand('markdown.showPreview', changesUri).then(undefined, () => {
+        vscode.workspace.openTextDocument(changesUri).then(doc => {
+          vscode.window.showTextDocument(doc, { preview: true });
+        });
+      });
+    } catch (err) {
+      console.error('Failed to write changes summary:', err);
+    }
+  }
+
   // ----------------------------------------------------
   // PARSER & PROMPT HELPERS
   // ----------------------------------------------------
@@ -774,7 +905,7 @@ export class Agent {
         // Clean out the XML tags from user message content in UI display
         let displayContent = contentStr
           .replace(/<list_files(?:\s+glob=["']([^"']+)["'])?\s*\/>/g, '')
-          .replace(/<read_file\s+path=["']([^"']+)["']\s*\/>/g, '')
+          .replace(/<read_file\s+([^>]+?)\s*\/>/g, '')
           .replace(/<search_code\s+query=["']([^"']+)["']\s*\/>/g, '')
           .replace(/<write_file\s+path=["']([^"']+)["']>([\s\S]*?)<\/write_file>/g, '')
           .replace(/<write_file\s+path=["']([^"']+)["']>([\s\S]*)/g, '')
@@ -805,6 +936,16 @@ export class Agent {
   /**
    * Incremental XML tag scanner that extracts tool commands.
    */
+  private parseAttributes(attrString: string): Record<string, string> {
+    const attrs: Record<string, string> = {};
+    const attrRegex = /(\w+)=["']([^"']+)["']/g;
+    let match: RegExpExecArray | null;
+    while ((match = attrRegex.exec(attrString)) !== null) {
+      attrs[match[1]] = match[2];
+    }
+    return attrs;
+  }
+
   private parseActiveTools(content: string): ToolCall[] {
     const tools: ToolCall[] = [];
     let match: RegExpExecArray | null;
@@ -820,15 +961,22 @@ export class Agent {
       });
     }
 
-    // 2. read_file
-    const readRegex = /<read_file\s+path=["']([^"']+)["']\s*\/>/g;
+    // 2. read_file (supporting optional line_start and line_end)
+    const readRegex = /<read_file\s+([^>]+?)\s*\/>/g;
     while ((match = readRegex.exec(content)) !== null) {
-      tools.push({
-        id: this.generateToolId('read_file', match[1]),
-        name: 'read_file',
-        arguments: { path: match[1] },
-        status: 'pending'
-      });
+      const attrs = this.parseAttributes(match[1]);
+      if (attrs.path) {
+        tools.push({
+          id: this.generateToolId('read_file', attrs.path),
+          name: 'read_file',
+          arguments: {
+            path: attrs.path,
+            line_start: attrs.line_start || attrs.start_line || attrs.start || undefined,
+            line_end: attrs.line_end || attrs.end_line || attrs.end || undefined
+          },
+          status: 'pending'
+        });
+      }
     }
 
     // 3. search_code
@@ -922,8 +1070,8 @@ Available Tools:
 1. List workspace files (excludes node_modules and metadata) with optional glob pattern:
 <list_files glob="src/**/*.ts"/> or <list_files/>
 
-2. Read file content:
-<read_file path="src/extension.ts"/>
+2. Read file content (optionally specify line range with line_start and line_end):
+<read_file path="src/extension.ts" line_start="10" line_end="50"/> or <read_file path="src/extension.ts"/>
 
 3. Search code for substrings/pattern:
 <search_code query="pattern to find"/>

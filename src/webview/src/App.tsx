@@ -220,6 +220,26 @@ const ThinkingProcess = ({
   );
 };
 
+const CollapsibleCodeResult = ({ content }: { content: string }) => {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div className="space-y-1.5 select-text">
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); setExpanded(!expanded); }}
+        className="flex items-center space-x-1 text-[10px] text-cyan-400 hover:text-cyan-300 font-bold bg-vscode-inputBg/40 border border-vscode-inputBorder/35 px-2.5 py-1 rounded transition-all cursor-pointer select-none"
+      >
+        <span>{expanded ? 'Hide Code Content' : 'Show Code Content'}</span>
+      </button>
+      {expanded && (
+        <pre className="m-0 p-2.5 bg-black/40 border border-vscode-inputBorder/35 rounded font-mono text-[11px] text-vscode-fg/85 leading-normal max-h-[220px] overflow-y-auto whitespace-pre-wrap animate-fade-in">
+          <code>{content}</code>
+        </pre>
+      )}
+    </div>
+  );
+};
+
 const ToolStep = ({
   tool,
   onToolDecision,
@@ -239,7 +259,10 @@ const ToolStep = ({
     title = tool.arguments.glob ? `Scanning files matching "${tool.arguments.glob}"` : 'Scanning workspace files';
   } else if (tool.name === 'read_file') {
     const filename = tool.arguments.path ? tool.arguments.path.split(/[/\\]/).pop() : '';
-    title = `Reading file: ${filename || tool.arguments.path}`;
+    const start = tool.arguments.line_start;
+    const end = tool.arguments.line_end;
+    const lineRange = start && end ? ` (Lines ${start} to ${end})` : '';
+    title = `Reading file: ${filename || tool.arguments.path}${lineRange}`;
     Icon = FileText;
     iconColorClass = "text-blue-400";
     targetDesc = tool.arguments.path;
@@ -256,7 +279,10 @@ const ToolStep = ({
     targetDesc = tool.arguments.path;
   } else if (tool.name === 'edit_file') {
     const filename = tool.arguments.path ? tool.arguments.path.split(/[/\\]/).pop() : '';
-    title = `Editing file: ${filename || tool.arguments.path}`;
+    const start = tool.arguments.line_start;
+    const end = tool.arguments.line_end;
+    const lineRange = start && end ? ` (Lines ${start} to ${end})` : '';
+    title = `Editing file: ${filename || tool.arguments.path}${lineRange}`;
     Icon = FileCode;
     iconColorClass = "text-emerald-400";
     targetDesc = tool.arguments.path;
@@ -384,9 +410,13 @@ const ToolStep = ({
           {tool.result && (
             <div className="space-y-1.5">
               <div className="text-[10px] uppercase font-mono tracking-wider font-semibold text-vscode-fg/40">Execution Result:</div>
-              <pre className="m-0 p-2.5 bg-black/40 border border-vscode-inputBorder/35 rounded font-mono text-[11px] text-vscode-fg/85 leading-normal max-h-[140px] overflow-y-auto whitespace-pre-wrap">
-                <code>{tool.result}</code>
-              </pre>
+              {tool.name === 'read_file' ? (
+                <CollapsibleCodeResult content={tool.result} />
+              ) : (
+                <pre className="m-0 p-2.5 bg-black/40 border border-vscode-inputBorder/35 rounded font-mono text-[11px] text-vscode-fg/85 leading-normal max-h-[140px] overflow-y-auto whitespace-pre-wrap">
+                  <code>{tool.result}</code>
+                </pre>
+              )}
             </div>
           )}
         </div>
@@ -719,9 +749,46 @@ export default function App() {
     );
   };
 
-  const filteredModels = modelsList.filter((m) =>
-    (m.name || m.id).toLowerCase().includes(modelSearch.toLowerCase())
+  const defaultModelOrder = [
+    'openai/gpt-5.4-mini',
+    'openai/gpt-5.4',
+    'anthropic/claude-sonnet-4.6',
+    'anthropic/claude-opus-4.6',
+    'google/gemini-3.5-flash',
+  ];
+
+  const normalizedModelId = (value: string) =>
+    value.toLowerCase().replace(/\s+/g, '').replace(/[._]/g, '-');
+
+  const defaultModelLabels: Record<string, string> = {
+    'openai/gpt-5.4-mini': 'GPT 5.4 Mini',
+    'openai/gpt-5.4': 'GPT 5.4',
+    'anthropic/claude-sonnet-4.6': 'Claude Sonnet 4.6',
+    'anthropic/claude-opus-4.6': 'Claude Opus 4.6',
+    'google/gemini-3.5-flash': 'Gemini 3.5 Flash',
+  };
+
+  const preferredModels = modelsList.filter((m) => {
+    const id = normalizedModelId(m.id || '');
+    const name = normalizedModelId(m.name || '');
+    return defaultModelOrder.some((defaultId) => {
+      const normalizedDefaultId = normalizedModelId(defaultId);
+      return id.includes(normalizedDefaultId) || name.includes(normalizedDefaultId);
+    });
+  });
+
+  const preferredModelIds = new Set(preferredModels.map((m) => m.id));
+
+  const otherModels = modelsList.filter(
+    (m) =>
+      !preferredModelIds.has(m.id) &&
+      (m.name || m.id).toLowerCase().includes(modelSearch.toLowerCase())
   );
+
+  const filteredModels = [
+    ...preferredModels,
+    ...otherModels,
+  ];
 
   return (
     <div className="flex flex-col h-screen text-vscode-fg bg-vscode-bg antialiased select-text overflow-hidden">
