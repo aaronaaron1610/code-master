@@ -370,6 +370,22 @@ export class Agent {
           tool.arguments.originalPath = absoluteDest;
         }
 
+        // Create plan in markdown file and open it
+        const planPath = path.join(this.workspaceRoot, 'coding_plan.md');
+        try {
+          const planContent = this.createPlanMarkdown(filePath, 'write', { content: fileContent });
+          fs.writeFileSync(planPath, planContent, 'utf8');
+          const planUri = vscode.Uri.file(planPath);
+          try {
+            await vscode.commands.executeCommand('markdown.showPreview', planUri);
+          } catch {
+            const doc = await vscode.workspace.openTextDocument(planUri);
+            await vscode.window.showTextDocument(doc, { preview: true });
+          }
+        } catch (planErr) {
+          console.error('Failed to create or display plan:', planErr);
+        }
+
         onStateUpdate({ 
           messages: this.renderMessagesForUI(), 
           isLlmActive: false,
@@ -405,10 +421,11 @@ export class Agent {
           tool.result = `User REJECTED modifying/creating file: ${filePath}`;
         }
 
-        // Clean up temp files
+        // Clean up temp and plan files
         try {
           if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
           if (!exists && fs.existsSync(originalDiffSource)) fs.unlinkSync(originalDiffSource);
+          if (fs.existsSync(planPath)) fs.unlinkSync(planPath);
         } catch {
           // ignore cleanup errors
         }
@@ -437,6 +454,22 @@ export class Agent {
 
         const absoluteDest = this.resolvePath(filePath);
         tool.arguments.originalPath = absoluteDest;
+
+        // Create plan in markdown file and open it
+        const planPath = path.join(this.workspaceRoot, 'coding_plan.md');
+        try {
+          const planContent = this.createPlanMarkdown(filePath, 'edit', { search: searchContent, replace: replaceContent });
+          fs.writeFileSync(planPath, planContent, 'utf8');
+          const planUri = vscode.Uri.file(planPath);
+          try {
+            await vscode.commands.executeCommand('markdown.showPreview', planUri);
+          } catch {
+            const doc = await vscode.workspace.openTextDocument(planUri);
+            await vscode.window.showTextDocument(doc, { preview: true });
+          }
+        } catch (planErr) {
+          console.error('Failed to create or display plan:', planErr);
+        }
 
         onStateUpdate({ 
           messages: this.renderMessagesForUI(), 
@@ -469,6 +502,7 @@ export class Agent {
 
         try {
           if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
+          if (fs.existsSync(planPath)) fs.unlinkSync(planPath);
         } catch {
           // ignore cleanup
         }
@@ -686,6 +720,29 @@ export class Agent {
     }
     
     return content;
+  }
+
+  private createPlanMarkdown(filePath: string, action: 'write' | 'edit', details: { content?: string; search?: string; replace?: string }): string {
+    const ext = path.extname(filePath).slice(1);
+    const lang = ext || 'text';
+    
+    let md = `# Proposed Coding Plan\n\n`;
+    md += `The AI Assistant is proposing to ${action === 'write' ? 'create/overwrite' : 'edit'} a file.\n\n`;
+    md += `## Details\n`;
+    md += `- **Action**: ${action === 'write' ? 'Write/Overwrite File' : 'Edit File'}\n`;
+    md += `- **Target File**: \\\`${filePath}\\\`\n\n`;
+    
+    if (action === 'write') {
+      md += `## Proposed Content\n`;
+      md += `\`\`\`${lang}\n${details.content || ''}\n\`\`\`\n`;
+    } else {
+      md += `## Proposed Changes\n\n`;
+      md += `### Search Block (to replace)\n`;
+      md += `\`\`\`${lang}\n${details.search || ''}\n\`\`\`\n\n`;
+      md += `### Replace Block (new code)\n`;
+      md += `\`\`\`${lang}\n${details.replace || ''}\n\`\`\`\n`;
+    }
+    return md;
   }
 
   // ----------------------------------------------------
