@@ -435,6 +435,11 @@ export default function App() {
   const [isLlmActive, setIsLlmActive] = useState(false);
   const [workspacePath, setWorkspacePath] = useState('');
   const [usage, setUsage] = useState<{ input: number; output: number; cacheRead: number; cacheWrite: number } | null>(null);
+  const [sessionUsage, setSessionUsage] = useState<{ input: number; output: number; cacheRead: number; cacheWrite: number } | null>(null);
+  const [sessionCost, setSessionCost] = useState<number>(0);
+  const [sessionInputCost, setSessionInputCost] = useState<number>(0);
+  const [sessionOutputCost, setSessionOutputCost] = useState<number>(0);
+  const [sessionCacheCost, setSessionCacheCost] = useState<number>(0);
   const [architectureExists, setArchitectureExists] = useState(false);
 
   const [thinkingEffort, setThinkingEffort] = useState<'none' | 'low' | 'medium' | 'high' | 'xhigh'>('medium');
@@ -545,6 +550,11 @@ export default function App() {
           if (data.thinkingEffort) setThinkingEffort(data.thinkingEffort);
           if (data.architectureExists !== undefined) setArchitectureExists(data.architectureExists);
           setUsage(data.usage || null);
+          setSessionUsage(data.sessionUsage || null);
+          setSessionCost(data.sessionCost || 0);
+          setSessionInputCost(data.sessionInputCost || 0);
+          setSessionOutputCost(data.sessionOutputCost || 0);
+          setSessionCacheCost(data.sessionCacheCost || 0);
           break;
         case 'activeState':
           setIsLlmActive(data.active);
@@ -653,6 +663,11 @@ export default function App() {
   const resetChat = () => {
     vscode.postMessage({ type: 'resetChat' });
     setUsage(null);
+    setSessionUsage(null);
+    setSessionCost(0);
+    setSessionInputCost(0);
+    setSessionOutputCost(0);
+    setSessionCacheCost(0);
   };
 
   const updateModel = (selectedModel: string) => {
@@ -1197,27 +1212,33 @@ export default function App() {
           const cacheCost = (usage.cacheRead || 0) * cachedInputPrice;
           const totalCost = inputCost + outputCost + cacheCost;
 
+          const displayCost = sessionCost > 0 ? sessionCost : totalCost;
+          const displayInputCost = sessionCost > 0 ? sessionInputCost : inputCost;
+          const displayOutputCost = sessionCost > 0 ? sessionOutputCost : outputCost;
+          const displayCacheCost = sessionCost > 0 ? sessionCacheCost : cacheCost;
+          const showCacheRead = (sessionUsage && sessionUsage.cacheRead > 0) ? sessionUsage.cacheRead : usage.cacheRead;
+
           return (
             <div className="flex flex-col gap-1 px-2 py-1 bg-vscode-inputBg/15 border border-vscode-inputBorder/15 rounded text-vscode-fg/40 font-mono select-none animate-fade-in">
               <div className="flex items-center justify-between gap-3">
-                <div className={`flex items-center space-x-1 ${ctxColor} font-semibold`} title={`Context window usage: ${contextPct.toFixed(1)}%`}>
+                <div className={`flex items-center space-x-1 ${ctxColor} font-semibold`} title={`Context window usage: ${contextPct.toFixed(1)}% (Current Turn)`}>
                   <Gauge className="h-3 w-3" />
                   <span className="text-[9px]">{contextPct.toFixed(0)}%</span>
                 </div>
 
-                {usage.cacheRead > 0 && (
-                  <div className="flex items-center space-x-1 text-emerald-400 font-semibold" title={`Cached tokens: ${usage.cacheRead}`}>
+                {showCacheRead > 0 && (
+                  <div className="flex items-center space-x-1 text-emerald-400 font-semibold" title={`Cached tokens in session: ${showCacheRead}`}>
                     <Database className="h-3 w-3" />
-                    <span className="text-[9px]">{usage.cacheRead}</span>
+                    <span className="text-[9px]">{showCacheRead}</span>
                     <span className="text-[9px] text-vscode-fg/35">cache</span>
                   </div>
                 )}
               </div>
 
               <div className="flex items-center justify-between gap-3 text-[9px]">
-                <span className="text-vscode-fg/35">Total cost</span>
-                <span className="text-emerald-300 font-semibold" title={`Prompt: ${inputCost.toFixed(6)} · Completion: ${outputCost.toFixed(6)} · Cache: ${cacheCost.toFixed(6)}`}>
-                  ${totalCost.toFixed(6)}
+                <span className="text-vscode-fg/35">Total cost (Chat Session)</span>
+                <span className="text-emerald-300 font-semibold" title={`Prompt: $${displayInputCost.toFixed(6)} · Completion: $${displayOutputCost.toFixed(6)} · Cache: $${displayCacheCost.toFixed(6)}`}>
+                  ${displayCost.toFixed(6)}
                 </span>
               </div>
             </div>

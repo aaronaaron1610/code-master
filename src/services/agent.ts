@@ -13,6 +13,8 @@ export interface ToolCall {
   tempFilePath?: string;
 }
 
+import * as crypto from 'crypto';
+
 export class Agent {
   private messages: ChatMessage[] = [];
   private workspaceRoot: string = '';
@@ -21,6 +23,7 @@ export class Agent {
   private toolSeq = 0;
   private abortController: AbortController | null = null;
   private cumulativeUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  private lastSentFile: { path: string; hash: string } | null = null;
 
   constructor() {
     const folders = vscode.workspace.workspaceFolders;
@@ -39,6 +42,7 @@ export class Agent {
     this.activeResolver = null;
     this.abortController = null;
     this.cumulativeUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+    this.lastSentFile = null;
   }
 
   getMessages(): ChatMessage[] {
@@ -47,6 +51,10 @@ export class Agent {
 
   setMessages(msgs: ChatMessage[]) {
     this.messages = msgs;
+  }
+
+  getCumulativeUsage() {
+    return this.cumulativeUsage;
   }
 
   /**
@@ -335,8 +343,15 @@ export class Agent {
           totalLines = fileContent.split(/\r?\n/).length;
         }
         
-        const resolvedStart = lineStart !== undefined ? Math.max(1, lineStart) : 1;
-        const resolvedEnd = lineEnd !== undefined ? Math.min(totalLines, lineEnd) : (totalLines || 1);
+        let resolvedStart = lineStart !== undefined ? Math.max(1, lineStart) : 1;
+        let resolvedEnd = lineEnd !== undefined ? Math.min(totalLines, lineEnd) : totalLines;
+
+        // Default range if not specified is 1 to 800
+        if (lineStart === undefined && lineEnd === undefined) {
+          resolvedEnd = Math.min(totalLines, 800);
+        } else if (resolvedEnd - resolvedStart + 1 > 800) {
+          resolvedEnd = resolvedStart + 799;
+        }
 
         const content = await this.toolReadFile(filePath, resolvedStart, resolvedEnd);
         tool.status = 'completed';
@@ -344,7 +359,12 @@ export class Agent {
         tool.arguments.line_start = resolvedStart.toString();
         tool.arguments.line_end = resolvedEnd.toString();
         
-        tool.result = `Content of ${filePath} (Lines ${resolvedStart} to ${resolvedEnd}):\n${content}`;
+        let note = '';
+        if (resolvedEnd < totalLines) {
+          note = `\n\n[Note: Showing lines ${resolvedStart} to ${resolvedEnd} of ${totalLines} total lines. Only up to 800 lines are shown at once. Use line_start/line_end tool arguments to request other line ranges if needed.]`;
+        }
+        
+        tool.result = `Content of ${filePath} (Lines ${resolvedStart} to ${resolvedEnd}):\n${content}${note}`;
         return tool.result;
       }
       
@@ -1153,8 +1173,24 @@ RULES:
       const doc = activeEditor.document;
       const relativePath = vscode.workspace.asRelativePath(doc.uri);
       const text = doc.getText();
-      const cappedText = text.length > 50000 ? text.substring(0, 50000) + '\n... [truncated]' : text;
-      prompt += `\n\nActive open file in editor:\nPath: ${relativePath}\n\`\`\`\n${cappedText}\n\`\`\``;
+      
+      const lines = text.split(/\r?\n/);
+      const totalLines = lines.length;
+      const activeLine = activeEditor.selection.active.line;
+      const startLine = Math.max(0, activeLine - 100);
+      const endLine = Math.min(totalLines - 1, activeLine + 100);
+      const slicedLines = lines.slice(startLine, endLine + 1);
+      const windowedText = slicedLines.join('\n');
+      
+      const currentHash = crypto.createHash('md5').update(windowedText).digest('hex');
+      
+      prompt += `\n\nActive open file in editor:\nPath: ${relativePath}`;
+      if (this.lastSentFile && this.lastSentFile.path === relativePath && this.lastSentFile.hash === currentHash) {
+        prompt += `\n(File content unchanged since previous step)`;
+      } else {
+        prompt += ` (Lines ${startLine + 1} to ${endLine + 1} of ${totalLines} total):\n\`\`\`\n${windowedText}\n\`\`\``;
+        this.lastSentFile = { path: relativePath, hash: currentHash };
+      }
     }
 
     return prompt;

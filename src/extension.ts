@@ -3,8 +3,9 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as https from 'https';
 import * as dotenv from 'dotenv';
+import * as crypto from 'crypto';
 import { Agent } from './services/agent';
-import { streamChat, ChatMessage, Attachment, ChatMessageContentPart, getMessageTextContent, constructPromptWithFiles } from './services/llm';
+import { streamChat, ChatMessage, Attachment, ChatMessageContentPart, getMessageTextContent, constructPromptWithFiles, summarizeMessages } from './services/llm';
 
 export function activate(context: vscode.ExtensionContext) {
   const agent = new Agent();
@@ -44,6 +45,56 @@ class CodeMasterChatViewProvider implements vscode.WebviewViewProvider {
   private currentThinkingEffort: 'none' | 'low' | 'medium' | 'high' | 'xhigh' = 'medium';
   private activeAbortController?: AbortController;
   private openRouterModels: any[] = [];
+  private lastSentFile: { path: string; hash: string } | null = null;
+
+  private sessionUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  private sessionCost = 0;
+  private sessionInputCost = 0;
+  private sessionOutputCost = 0;
+  private sessionCacheCost = 0;
+
+  private getModelPricing(modelId: string) {
+    const m = this.openRouterModels.find(x => x.id === modelId);
+    return m?.pricing;
+  }
+
+  private getCachedInputPrice(pricing: any, modelId: string): number {
+    if (!pricing) return 0;
+    const promptPrice = parseFloat(pricing.prompt || '0');
+    const id = modelId.toLowerCase();
+    if (id.includes('anthropic/')) {
+      return promptPrice * 0.1;
+    }
+    if (id.includes('deepseek/')) {
+      return promptPrice * 0.25;
+    }
+    if (id.includes('google/')) {
+      return promptPrice * 0.25;
+    }
+    if (id.includes('openai/')) {
+      return promptPrice * 0.5;
+    }
+    return promptPrice * 0.1;
+  }
+
+  private calculateUsageCost(modelId: string, usage: { input: number; output: number; cacheRead: number }) {
+    const pricing = this.getModelPricing(modelId);
+    if (!pricing) return { total: 0, input: 0, output: 0, cache: 0 };
+    const promptPrice = parseFloat(pricing.prompt || '0');
+    const completionPrice = parseFloat(pricing.completion || '0');
+    const cachedInputPrice = this.getCachedInputPrice(pricing, modelId);
+    
+    const inputCost = usage.input * promptPrice;
+    const outputCost = usage.output * completionPrice;
+    const cacheCost = usage.cacheRead * cachedInputPrice;
+    
+    return {
+      total: inputCost + outputCost + cacheCost,
+      input: inputCost,
+      output: outputCost,
+      cache: cacheCost
+    };
+  }
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -123,7 +174,12 @@ class CodeMasterChatViewProvider implements vscode.WebviewViewProvider {
             model: this.currentModel,
             mode: this.currentMode,
             thinkingEffort: this.currentThinkingEffort,
-            architectureExists: this.doesArchitectureFileExist()
+            architectureExists: this.doesArchitectureFileExist(),
+            sessionUsage: this.sessionUsage,
+            sessionCost: this.sessionCost,
+            sessionInputCost: this.sessionInputCost,
+            sessionOutputCost: this.sessionOutputCost,
+            sessionCacheCost: this.sessionCacheCost
           });
           break;
         case 'sendMessage':
@@ -157,6 +213,12 @@ class CodeMasterChatViewProvider implements vscode.WebviewViewProvider {
   resetConversation() {
     this.chatMessages = [];
     this.agent.reset();
+    this.lastSentFile = null;
+    this.sessionUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+    this.sessionCost = 0;
+    this.sessionInputCost = 0;
+    this.sessionOutputCost = 0;
+    this.sessionCacheCost = 0;
     this.postMessageToWebview({
       type: 'state',
       messages: [],
@@ -164,7 +226,12 @@ class CodeMasterChatViewProvider implements vscode.WebviewViewProvider {
       model: this.currentModel,
       mode: this.currentMode,
       thinkingEffort: this.currentThinkingEffort,
-      architectureExists: this.doesArchitectureFileExist()
+      architectureExists: this.doesArchitectureFileExist(),
+      sessionUsage: this.sessionUsage,
+      sessionCost: this.sessionCost,
+      sessionInputCost: this.sessionInputCost,
+      sessionOutputCost: this.sessionOutputCost,
+      sessionCacheCost: this.sessionCacheCost
     });
   }
 
@@ -219,7 +286,12 @@ class CodeMasterChatViewProvider implements vscode.WebviewViewProvider {
         openrouterKey: openrouterKey ? `sk-or-...${openrouterKey.slice(-6)}` : ''
       },
       models: this.openRouterModels,
-      architectureExists: this.doesArchitectureFileExist()
+      architectureExists: this.doesArchitectureFileExist(),
+      sessionUsage: this.sessionUsage,
+      sessionCost: this.sessionCost,
+      sessionInputCost: this.sessionInputCost,
+      sessionOutputCost: this.sessionOutputCost,
+      sessionCacheCost: this.sessionCacheCost
     });
   }
 
@@ -240,7 +312,12 @@ class CodeMasterChatViewProvider implements vscode.WebviewViewProvider {
             role: 'assistant',
             content: `⚠️ OpenRouter API Key not found! Please create a \`.env\` file in your workspace root (\`${this.agent.getWorkspacePath()}\`) and add \`OPENROUTER_API_KEY=your_key_here\`.`
           }
-        ]
+        ],
+        sessionUsage: this.sessionUsage,
+        sessionCost: this.sessionCost,
+        sessionInputCost: this.sessionInputCost,
+        sessionOutputCost: this.sessionOutputCost,
+        sessionCacheCost: this.sessionCacheCost
       });
       return;
     }
@@ -288,6 +365,8 @@ class CodeMasterChatViewProvider implements vscode.WebviewViewProvider {
         attachments,
         { provider: 'OpenRouter', model: options.model, apiKey, thinkingEffort: requestThinkingEffort },
         (state) => {
+          const runUsage = state.usage || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+          const activeCost = this.calculateUsageCost(options.model, runUsage);
           this.postMessageToWebview({
             type: 'state',
             messages: state.messages,
@@ -295,7 +374,17 @@ class CodeMasterChatViewProvider implements vscode.WebviewViewProvider {
             model: options.model,
             mode: 'agent',
             thinkingEffort: requestThinkingEffort,
-            usage: state.usage
+            usage: state.usage,
+            sessionUsage: {
+              input: this.sessionUsage.input + runUsage.input,
+              output: this.sessionUsage.output + runUsage.output,
+              cacheRead: this.sessionUsage.cacheRead + runUsage.cacheRead,
+              cacheWrite: this.sessionUsage.cacheWrite + runUsage.cacheWrite
+            },
+            sessionCost: this.sessionCost + activeCost.total,
+            sessionInputCost: this.sessionInputCost + activeCost.input,
+            sessionOutputCost: this.sessionOutputCost + activeCost.output,
+            sessionCacheCost: this.sessionCacheCost + activeCost.cache
           });
           this.postMessageToWebview({
             type: 'activeState',
@@ -303,6 +392,18 @@ class CodeMasterChatViewProvider implements vscode.WebviewViewProvider {
           });
         }
       );
+
+      // Accumulate the final run usage into the session cumulative totals
+      const finalRunUsage = this.agent.getCumulativeUsage() || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+      const finalCostDetails = this.calculateUsageCost(options.model, finalRunUsage);
+      this.sessionUsage.input += finalRunUsage.input;
+      this.sessionUsage.output += finalRunUsage.output;
+      this.sessionUsage.cacheRead += finalRunUsage.cacheRead;
+      this.sessionUsage.cacheWrite += finalRunUsage.cacheWrite;
+      this.sessionCost += finalCostDetails.total;
+      this.sessionInputCost += finalCostDetails.input;
+      this.sessionOutputCost += finalCostDetails.output;
+      this.sessionCacheCost += finalCostDetails.cache;
 
       // Keep backend messages synced
       this.chatMessages = [...this.agent.getMessages()];
@@ -315,7 +416,12 @@ class CodeMasterChatViewProvider implements vscode.WebviewViewProvider {
         provider: 'OpenRouter',
         model: options.model,
         mode: 'chat',
-        thinkingEffort: requestThinkingEffort
+        thinkingEffort: requestThinkingEffort,
+        sessionUsage: this.sessionUsage,
+        sessionCost: this.sessionCost,
+        sessionInputCost: this.sessionInputCost,
+        sessionOutputCost: this.sessionOutputCost,
+        sessionCacheCost: this.sessionCacheCost
       });
       this.postMessageToWebview({ type: 'activeState', active: true });
 
@@ -330,8 +436,24 @@ class CodeMasterChatViewProvider implements vscode.WebviewViewProvider {
         const doc = activeEditor.document;
         const relativePath = vscode.workspace.asRelativePath(doc.uri);
         const text = doc.getText();
-        const cappedText = text.length > 50000 ? text.substring(0, 50000) + '\n... [truncated]' : text;
-        basePrompt += `\n\nActive open file in editor:\nPath: ${relativePath}\n\`\`\`\n${cappedText}\n\`\`\``;
+        
+        const lines = text.split(/\r?\n/);
+        const totalLines = lines.length;
+        const activeLine = activeEditor.selection.active.line;
+        const startLine = Math.max(0, activeLine - 100);
+        const endLine = Math.min(totalLines - 1, activeLine + 100);
+        const slicedLines = lines.slice(startLine, endLine + 1);
+        const windowedText = slicedLines.join('\n');
+        
+        const currentHash = crypto.createHash('md5').update(windowedText).digest('hex');
+        
+        basePrompt += `\n\nActive open file in editor:\nPath: ${relativePath}`;
+        if (this.lastSentFile && this.lastSentFile.path === relativePath && this.lastSentFile.hash === currentHash) {
+          basePrompt += `\n(File content unchanged since previous step)`;
+        } else {
+          basePrompt += ` (Lines ${startLine + 1} to ${endLine + 1} of ${totalLines} total):\n\`\`\`\n${windowedText}\n\`\`\``;
+          this.lastSentFile = { path: relativePath, hash: currentHash };
+        }
       }
 
       this.activeAbortController = new AbortController();
@@ -347,6 +469,7 @@ class CodeMasterChatViewProvider implements vscode.WebviewViewProvider {
             {
               onToken: (token) => {
                 streamContent += token;
+                const activeCost = this.calculateUsageCost(options.model, lastUsage);
                 this.postMessageToWebview({
                   type: 'state',
                   messages: [
@@ -363,11 +486,22 @@ class CodeMasterChatViewProvider implements vscode.WebviewViewProvider {
                   model: options.model,
                   mode: 'chat',
                   thinkingEffort: requestThinkingEffort,
-                  usage: lastUsage
+                  usage: lastUsage,
+                  sessionUsage: {
+                    input: this.sessionUsage.input + lastUsage.input,
+                    output: this.sessionUsage.output + lastUsage.output,
+                    cacheRead: this.sessionUsage.cacheRead + lastUsage.cacheRead,
+                    cacheWrite: this.sessionUsage.cacheWrite + lastUsage.cacheWrite
+                  },
+                  sessionCost: this.sessionCost + activeCost.total,
+                  sessionInputCost: this.sessionInputCost + activeCost.input,
+                  sessionOutputCost: this.sessionOutputCost + activeCost.output,
+                  sessionCacheCost: this.sessionCacheCost + activeCost.cache
                 });
               },
               onThought: (thought) => {
                 thoughtContent += thought;
+                const activeCost = this.calculateUsageCost(options.model, lastUsage);
                 this.postMessageToWebview({
                   type: 'state',
                   messages: [
@@ -384,11 +518,22 @@ class CodeMasterChatViewProvider implements vscode.WebviewViewProvider {
                   model: options.model,
                   mode: 'chat',
                   thinkingEffort: requestThinkingEffort,
-                  usage: lastUsage
+                  usage: lastUsage,
+                  sessionUsage: {
+                    input: this.sessionUsage.input + lastUsage.input,
+                    output: this.sessionUsage.output + lastUsage.output,
+                    cacheRead: this.sessionUsage.cacheRead + lastUsage.cacheRead,
+                    cacheWrite: this.sessionUsage.cacheWrite + lastUsage.cacheWrite
+                  },
+                  sessionCost: this.sessionCost + activeCost.total,
+                  sessionInputCost: this.sessionInputCost + activeCost.input,
+                  sessionOutputCost: this.sessionOutputCost + activeCost.output,
+                  sessionCacheCost: this.sessionCacheCost + activeCost.cache
                 });
               },
               onUsage: (u) => {
                 lastUsage = u;
+                const activeCost = this.calculateUsageCost(options.model, u);
                 this.postMessageToWebview({
                   type: 'state',
                   messages: [
@@ -405,7 +550,17 @@ class CodeMasterChatViewProvider implements vscode.WebviewViewProvider {
                   model: options.model,
                   mode: 'chat',
                   thinkingEffort: requestThinkingEffort,
-                  usage: u
+                  usage: u,
+                  sessionUsage: {
+                    input: this.sessionUsage.input + u.input,
+                    output: this.sessionUsage.output + u.output,
+                    cacheRead: this.sessionUsage.cacheRead + u.cacheRead,
+                    cacheWrite: this.sessionUsage.cacheWrite + u.cacheWrite
+                  },
+                  sessionCost: this.sessionCost + activeCost.total,
+                  sessionInputCost: this.sessionInputCost + activeCost.input,
+                  sessionOutputCost: this.sessionOutputCost + activeCost.output,
+                  sessionCacheCost: this.sessionCacheCost + activeCost.cache
                 });
               },
               onError: (err) => reject(new Error(err)),
@@ -416,6 +571,17 @@ class CodeMasterChatViewProvider implements vscode.WebviewViewProvider {
           );
         });
 
+        // Add lastUsage to session cumulative totals
+        const finalCostDetails = this.calculateUsageCost(options.model, lastUsage);
+        this.sessionUsage.input += lastUsage.input;
+        this.sessionUsage.output += lastUsage.output;
+        this.sessionUsage.cacheRead += lastUsage.cacheRead;
+        this.sessionUsage.cacheWrite += lastUsage.cacheWrite;
+        this.sessionCost += finalCostDetails.total;
+        this.sessionInputCost += finalCostDetails.input;
+        this.sessionOutputCost += finalCostDetails.output;
+        this.sessionCacheCost += finalCostDetails.cache;
+
         this.chatMessages.push({ role: 'assistant', content: streamContent });
         this.postMessageToWebview({
           type: 'state',
@@ -423,9 +589,25 @@ class CodeMasterChatViewProvider implements vscode.WebviewViewProvider {
           provider: 'OpenRouter',
           model: options.model,
           mode: 'chat',
-          thinkingEffort: requestThinkingEffort
+          thinkingEffort: requestThinkingEffort,
+          sessionUsage: this.sessionUsage,
+          sessionCost: this.sessionCost,
+          sessionInputCost: this.sessionInputCost,
+          sessionOutputCost: this.sessionOutputCost,
+          sessionCacheCost: this.sessionCacheCost
         });
       } catch (err: any) {
+        // Even if failed, let's accumulate whatever usage we got
+        const finalCostDetails = this.calculateUsageCost(options.model, lastUsage);
+        this.sessionUsage.input += lastUsage.input;
+        this.sessionUsage.output += lastUsage.output;
+        this.sessionUsage.cacheRead += lastUsage.cacheRead;
+        this.sessionUsage.cacheWrite += lastUsage.cacheWrite;
+        this.sessionCost += finalCostDetails.total;
+        this.sessionInputCost += finalCostDetails.input;
+        this.sessionOutputCost += finalCostDetails.output;
+        this.sessionCacheCost += finalCostDetails.cache;
+
         this.chatMessages.push({
           role: 'assistant',
           content: `⚠️ Stream failed: ${err.message || err}`
@@ -436,11 +618,62 @@ class CodeMasterChatViewProvider implements vscode.WebviewViewProvider {
           provider: 'OpenRouter',
           model: options.model,
           mode: 'chat',
-          thinkingEffort: requestThinkingEffort
+          thinkingEffort: requestThinkingEffort,
+          sessionUsage: this.sessionUsage,
+          sessionCost: this.sessionCost,
+          sessionInputCost: this.sessionInputCost,
+          sessionOutputCost: this.sessionOutputCost,
+          sessionCacheCost: this.sessionCacheCost
         });
       } finally {
         this.postMessageToWebview({ type: 'activeState', active: false });
       }
+    }
+
+    // Auto-summarize conversation if it has grown too large
+    await this.summarizeConversationIfNeeded(apiKey, options.model);
+  }
+
+  private async summarizeConversationIfNeeded(apiKey: string, model: string) {
+    if (this.chatMessages.length <= 25) {
+      return;
+    }
+
+    try {
+      const toSummarizeCount = this.chatMessages.length - 10;
+      const messagesToSummarize = this.chatMessages.slice(0, toSummarizeCount);
+      const messagesToKeep = this.chatMessages.slice(toSummarizeCount);
+
+      const summaryText = await summarizeMessages(messagesToSummarize, apiKey, model);
+
+      this.chatMessages = [
+        {
+          role: 'system',
+          content: `[Conversation Summary]\n${summaryText}`
+        },
+        ...messagesToKeep
+      ];
+
+      if (this.currentMode === 'agent') {
+        this.agent.setMessages([...this.chatMessages]);
+      }
+
+      this.postMessageToWebview({
+        type: 'state',
+        messages: this.currentMode === 'agent' ? this.getUiMessagesFromAgent() : this.getUiMessagesFromChat(),
+        provider: this.currentProvider,
+        model: this.currentModel,
+        mode: this.currentMode,
+        thinkingEffort: this.currentThinkingEffort,
+        architectureExists: this.doesArchitectureFileExist(),
+        sessionUsage: this.sessionUsage,
+        sessionCost: this.sessionCost,
+        sessionInputCost: this.sessionInputCost,
+        sessionOutputCost: this.sessionOutputCost,
+        sessionCacheCost: this.sessionCacheCost
+      });
+    } catch (err) {
+      console.error('Error during automatic conversation summarization:', err);
     }
   }
 

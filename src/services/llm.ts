@@ -201,6 +201,104 @@ class SseParser {
   }
 }
 
+function stripXmlTags(contentStr: string): string {
+  return contentStr
+    .replace(/<list_files(?:\s+glob=["']([^"']+)["'])?\s*\/>/g, '')
+    .replace(/<read_file\s+([^>]+?)\s*\/>/g, '')
+    .replace(/<search_code\s+query=["']([^"']+)["']\s*\/>/g, '')
+    .replace(/<write_file\s+path=["']([^"']+)["']>([\s\S]*?)<\/write_file>/g, '')
+    .replace(/<write_file\s+path=["']([^"']+)["']>([\s\S]*)/g, '')
+    .replace(/<edit_file\s+path=["']([^"']+)["']>([\s\S]*?)<\/edit_file>/g, '')
+    .replace(/<edit_file\s+path=["']([^"']+)["']>([\s\S]*)/g, '')
+    .replace(/<run_command\s+cmd=["']([^"']+)["']\s*\/>/g, '')
+    .trim();
+}
+
+export function cleanMessagesForLlm(messages: ChatMessage[]): ChatMessage[] {
+  let lastUserIdx = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'user') {
+      lastUserIdx = i;
+      break;
+    }
+  }
+
+  if (lastUserIdx === -1) {
+    return messages;
+  }
+
+  const cleaned: ChatMessage[] = [];
+
+  interface Turn {
+    userMessage: ChatMessage;
+    otherMessages: ChatMessage[];
+  }
+  const turns: Turn[] = [];
+  let currentTurn: Turn | null = null;
+
+  for (let i = 0; i < lastUserIdx; i++) {
+    const msg = messages[i];
+    if (msg.role === 'user') {
+      if (currentTurn) {
+        turns.push(currentTurn);
+      }
+      currentTurn = { userMessage: msg, otherMessages: [] };
+    } else {
+      if (currentTurn) {
+        currentTurn.otherMessages.push(msg);
+      } else {
+        cleaned.push(msg);
+      }
+    }
+  }
+  if (currentTurn) {
+    turns.push(currentTurn);
+  }
+
+  for (const turn of turns) {
+    cleaned.push({
+      role: 'user',
+      content: typeof turn.userMessage.content === 'string'
+        ? turn.userMessage.content
+        : getMessageTextContent(turn.userMessage.content)
+    });
+
+    for (const msg of turn.otherMessages) {
+      if (msg.role === 'system') {
+        const text = typeof msg.content === 'string' ? msg.content : getMessageTextContent(msg.content);
+        if (!text.startsWith('[Tool Result')) {
+          cleaned.push(msg);
+        }
+      }
+    }
+
+    let lastAssistant: ChatMessage | null = null;
+    for (let j = turn.otherMessages.length - 1; j >= 0; j--) {
+      if (turn.otherMessages[j].role === 'assistant') {
+        lastAssistant = turn.otherMessages[j];
+        break;
+      }
+    }
+
+    if (lastAssistant) {
+      const rawContent = typeof lastAssistant.content === 'string'
+        ? lastAssistant.content
+        : getMessageTextContent(lastAssistant.content);
+      const cleanedContent = stripXmlTags(rawContent).trim();
+      cleaned.push({
+        role: 'assistant',
+        content: cleanedContent
+      });
+    }
+  }
+
+  for (let i = lastUserIdx; i < messages.length; i++) {
+    cleaned.push(messages[i]);
+  }
+
+  return cleaned;
+}
+
 async function streamOpenRouter(
   model: string,
   messages: ChatMessage[],
@@ -216,7 +314,8 @@ async function streamOpenRouter(
   if (systemPrompt) {
     apiMessages.push({ role: 'system', content: systemPrompt });
   }
-  for (const msg of messages) {
+  const cleanedHistory = cleanMessagesForLlm(messages);
+  for (const msg of cleanedHistory) {
     const contentStr = typeof msg.content === 'string' ? msg.content : getMessageTextContent(msg.content);
     apiMessages.push({ role: msg.role, content: contentStr });
   }
@@ -292,4 +391,64 @@ async function streamOpenRouter(
     (err) => callbacks.onError(err.message),
     signal
   );
+}
+
+export async function summarizeMessages(
+  messages: ChatMessage[],
+  apiKey: string,
+  model: string
+): Promise<string> {
+  const url = 'https://openrouter.ai/api/v1/chat/completions';
+  
+  const conversationText = messages.map(msg => {
+    const roleName = msg.role === 'user' ? 'User' : (msg.role === 'assistant' ? 'Assistant' : 'System/Tool');
+    const text = typeof msg.content === 'string' ? msg.content : getMessageTextContent(msg.content);
+    return `${roleName}: ${text}`;
+  }).join('\n\n');
+
+  const prompt = `You are an assistant. Please write a highly concise bullet-point summary of the following conversation history. Focus only on the key objectives, files discussed, and decisions made. Keep it under 150 words and use clear bullet points.
+    
+Conversation:
+${conversationText}
+
+Summary:`;
+
+  const body = JSON.stringify({
+    model: model,
+    messages: [{ role: 'user', content: prompt }]
+  });
+
+  const headers = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${apiKey}`,
+    'HTTP-Referer': 'https://github.com/antigravity/code-master',
+    'X-Title': 'Code Master VS Code Extension'
+  };
+
+  return new Promise<string>((resolve, reject) => {
+    const parsedUrl = new URL(url);
+    const options = {
+      hostname: parsedUrl.hostname,
+      path: parsedUrl.pathname,
+      method: 'POST',
+      headers
+    };
+
+    const req = https.request(options, (res) => {
+      let bodyData = '';
+      res.on('data', chunk => bodyData += chunk);
+      res.on('end', () => {
+        try {
+          const json = JSON.parse(bodyData);
+          const summary = json.choices?.[0]?.message?.content || '';
+          resolve(summary.trim());
+        } catch (e) {
+          reject(e);
+        }
+      });
+    });
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
 }
