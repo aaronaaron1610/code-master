@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as cp from 'child_process';
-import { streamChat, ChatMessage, ChatMessageContentPart, Attachment, getMessageTextContent, constructPromptWithFiles } from './llm';
+import { streamChat, ChatMessage, ChatMessageContentPart, Attachment, getMessageTextContent } from './llm';
 
 export interface ToolCall {
   id: string;

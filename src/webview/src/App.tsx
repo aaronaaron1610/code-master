@@ -596,9 +596,12 @@ export default function App() {
   const handleStartCodeDiscovery = () => {
     if (isLlmActive) return;
     updateMode('agent');
-    
+
     const promptText = "Analyze this workspace's files, structure, and technologies, and create a comprehensive ARCHITECTURE.md file in the workspace root that details the project's architecture.";
-    
+
+    // Always use GPT 5.4 for code discovery, regardless of the currently selected model
+    const discoveryModel = 'openai/gpt-5.4';
+
     vscode.postMessage({
       type: 'sendMessage',
       text: promptText,
@@ -606,8 +609,8 @@ export default function App() {
       options: {
         mode: 'agent',
         provider: 'OpenRouter',
-        model,
-        thinkingEffort: modelSupportsReasoning(model) ? thinkingEffort : undefined
+        model: discoveryModel,
+        thinkingEffort: modelSupportsReasoning(discoveryModel) ? thinkingEffort : undefined
       }
     });
   };
